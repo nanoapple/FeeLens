@@ -1,1 +1,23 @@
- 
+{
+  "name": "feelens",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "typecheck": "tsc --noEmit",
+    "deno:check": "deno check supabase/functions/*/index.ts",
+    "deno:lint": "deno lint supabase/functions"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.1.0",
+    "next": "14.2.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "typescript": "^5.6.0"
+  }
+}

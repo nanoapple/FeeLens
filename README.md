@@ -46,10 +46,19 @@ git add .
 git commit -m "Initial commit"
 
 # 4) 设置主分支名（推荐 main）
-git branch -M main
+git branch -M master
 
 # 5) 添加远程仓库（把 URL 换成你自己的）
-git remote add origin https://github.com/<your-username>/feelens.git
+git remote add origin https://github.com/nanoapple/feelens.git
 
 # 6) 推送
-git push -u origin main
+git push -u origin master
+
+
+### Prerequisites
+- Docker Desktop (running)
+- Supabase CLI
+
+Install Supabase CLI (macOS):
+```bash
+brew install supabase/tap/supabase
