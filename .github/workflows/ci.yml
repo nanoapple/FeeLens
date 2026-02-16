@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Cancel in-progress runs for the same branch/PR
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================
+  # Job 1: Frontend TypeScript 检查
+  # ==========================================
+  typecheck:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+  # ==========================================
+  # Job 2: Edge Functions — Deno check + lint
+  # ==========================================
+  deno:
+    name: Deno check & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v1.x
+
+      - name: Deno type check
+        run: deno check supabase/functions/*/index.ts
+
+      - name: Deno lint
+        run: deno lint supabase/functions/
+
+  # ==========================================
+  # Job 3: 禁止前端直接写库扫描
+  # ==========================================
+  no-direct-writes:
+    name: No direct DB writes in src/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for forbidden DB write patterns
+        run: bash scripts/check-no-direct-writes.sh
