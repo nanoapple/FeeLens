@@ -1,4 +1,4 @@
- // ==========================================
+// ==========================================
 // Edge Functions 封装层
 // 所有写入操作必须通过此文件的函数调用
 // ==========================================
@@ -68,6 +68,19 @@ export interface ApproveProviderResponse {
   error?: string
 }
 
+export interface ResolveDisputeParams {
+  dispute_id: string
+  outcome: 'maintained' | 'corrected' | 'removed' | 'partial_hidden'
+  platform_response: string
+  resolution_note?: string
+}
+
+export interface ResolveDisputeResponse {
+  success: boolean
+  outcome?: string
+  error?: string
+}
+
 // ==========================================
 // Edge Function 调用封装
 // ==========================================
@@ -83,46 +96,32 @@ export async function submitEntry(
   const supabase = createClient()
   
   try {
-    // 确保用户已登录
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
-      return {
-        success: false,
-        error: '请先登录'
-      }
+      return { success: false, error: '请先登录' }
     }
     
-    // 调用 Edge Function
     const { data, error } = await supabase.functions.invoke<SubmitEntryResponse>(
       'submit-entry',
-      {
-        body: params
-      }
+      { body: params }
     )
     
     if (error) {
       console.error('Edge Function 调用失败:', error)
-      return {
-        success: false,
-        error: error.message || '提交失败，请稍后重试'
-      }
+      return { success: false, error: error.message || '提交失败，请稍后重试' }
     }
     
     return data as SubmitEntryResponse
-    
   } catch (error) {
     console.error('提交条目时发生错误:', error)
-    return {
-      success: false,
-      error: '网络错误，请检查连接后重试'
-    }
+    return { success: false, error: '网络错误，请检查连接后重试' }
   }
 }
 
 /**
  * 举报条目
  * 调用 Edge Function: report-entry
- * 最终调用 RPC: report_entry
+ * RPC 内部通过 auth.uid() 识别举报人，不传 user_id
  */
 export async function reportEntry(
   params: ReportEntryParams
@@ -132,41 +131,29 @@ export async function reportEntry(
   try {
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
-      return {
-        success: false,
-        error: '请先登录'
-      }
+      return { success: false, error: '请先登录' }
     }
     
     const { data, error } = await supabase.functions.invoke<ReportEntryResponse>(
       'report-entry',
-      {
-        body: params
-      }
+      { body: params }
     )
     
     if (error) {
-      return {
-        success: false,
-        error: error.message || '举报失败'
-      }
+      return { success: false, error: error.message || '举报失败' }
     }
     
     return data as ReportEntryResponse
-    
   } catch (error) {
     console.error('举报时发生错误:', error)
-    return {
-      success: false,
-      error: '网络错误'
-    }
+    return { success: false, error: '网络错误' }
   }
 }
 
 /**
  * 审核条目（管理员）
  * 调用 Edge Function: moderate-entry
- * 最终调用 RPC: moderate_entry
+ * RPC 内部通过 auth.uid() 识别管理员，不传 admin_id
  */
 export async function moderateEntry(
   params: ModerateEntryParams
@@ -176,40 +163,28 @@ export async function moderateEntry(
   try {
     const { data, error } = await supabase.functions.invoke<ModerateEntryResponse>(
       'moderate-entry',
-      {
-        body: params
-      }
+      { body: params }
     )
     
     if (error) {
-      return {
-        success: false,
-        error: error.message || '审核失败'
-      }
+      return { success: false, error: error.message || '审核失败' }
     }
     
     if (!data) {
-      return {
-        success: false,
-        error: '审核失败'
-      }
+      return { success: false, error: '审核失败' }
     }
     
     return data as ModerateEntryResponse
-    
   } catch (error) {
     console.error('审核时发生错误:', error)
-    return {
-      success: false,
-      error: '网络错误'
-    }
+    return { success: false, error: '网络错误' }
   }
 }
 
 /**
  * 审核商家（管理员）
  * 调用 Edge Function: approve-provider
- * 最终调用 RPC: approve_provider
+ * RPC 内部通过 auth.uid() 识别管理员，不传 admin_id
  */
 export async function approveProvider(
   params: ApproveProviderParams
@@ -219,25 +194,43 @@ export async function approveProvider(
   try {
     const { data, error } = await supabase.functions.invoke<ApproveProviderResponse>(
       'approve-provider',
-      {
-        body: params
-      }
+      { body: params }
     )
     
     if (error) {
-      return {
-        success: false,
-        error: error.message || '审核失败'
-      }
+      return { success: false, error: error.message || '审核失败' }
     }
     
     return data as ApproveProviderResponse
-    
   } catch (error) {
     console.error('审核商家时发生错误:', error)
-    return {
-      success: false,
-      error: '网络错误'
+    return { success: false, error: '网络错误' }
+  }
+}
+
+/**
+ * 解决争议（管理员）
+ * 调用 Edge Function: resolve-dispute
+ * RPC 内部通过 auth.uid() 识别管理员，不传 admin_id
+ */
+export async function resolveDispute(
+  params: ResolveDisputeParams
+): Promise<ResolveDisputeResponse> {
+  const supabase = createClient()
+  
+  try {
+    const { data, error } = await supabase.functions.invoke<ResolveDisputeResponse>(
+      'resolve-dispute',
+      { body: params }
+    )
+    
+    if (error) {
+      return { success: false, error: error.message || '争议处理失败' }
     }
+    
+    return data as ResolveDisputeResponse
+  } catch (error) {
+    console.error('处理争议时发生错误:', error)
+    return { success: false, error: '网络错误' }
   }
 }
