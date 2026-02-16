@@ -1,0 +1,20 @@
+# ---- Env files ----
+.env.local
+.env.*
+!.env.local.example
+
+# ---- Dependencies ----
+node_modules/
+
+# ---- Next.js build output ----
+.next/
+out/
+
+# ---- Supabase local artifacts ----
+.supabase/
+supabase/.temp/
+
+# ---- OS / Editor ----
+.DS_Store
+.idea/
+.vscode/
