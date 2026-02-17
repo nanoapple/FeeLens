@@ -320,3 +320,30 @@ BEGIN
   RAISE NOTICE '==========================================';
   RAISE NOTICE '';
 END $$;
+
+
+-- 如果迁移已把旧 seed reports 搬过来，这里补充额外的
+INSERT INTO entry_reports (id, entry_id, reporter_user_id, reason_code, report_text, status) VALUES
+  -- 新增：对 Adelaide entry 的价格不准确举报
+  ('cccccccc-0000-0000-0000-000000000003',
+   'aaaaaaaa-0000-0000-0000-000000000007',
+   '33333333-3333-3333-3333-333333333333',
+   'price_incorrect', '管理费实际是 7.2% 而非 7.8%', 'open'),
+
+  -- 新增：重复条目举报
+  ('cccccccc-0000-0000-0000-000000000004',
+   'aaaaaaaa-0000-0000-0000-000000000002',
+   '11111111-1111-1111-1111-111111111111',
+   'duplicate', '与另一条 Ray White 条目高度重复', 'open')
+ON CONFLICT DO NOTHING;
+
+-- ==========================================
+-- M2 补充：provider_actions 样例数据
+-- ==========================================
+INSERT INTO provider_actions (id, provider_id, actor_id, actor_type, action, old_status, new_status, reason) VALUES
+  -- 模拟 admin 审批 approved providers 的历史记录
+  ('eeeeeeee-0000-0000-0000-000000000003',
+   '00000000-0000-0000-0000-000000000101',
+   '22222222-2222-2222-2222-222222222222',
+   'admin', 'approve', 'pending', 'approved', 'Real estate agency verified via ABN lookup')
+ON CONFLICT DO NOTHING;
