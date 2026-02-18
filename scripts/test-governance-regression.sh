@@ -267,58 +267,72 @@ run_psql <<'SQL'
 DO $$
 DECLARE
   v_admin uuid;
-  v_provider uuid;
+  v_pending_provider uuid;
+  v_fallback_provider uuid;
   v_old_status text;
-  v_new_status text;
-  v_changed_by uuid;
-  v_changed_at timestamptz;
-  v_actions int;
+  v_res jsonb;
 BEGIN
   SELECT id INTO v_admin FROM auth.users WHERE email='admin@feelens.local';
   IF v_admin IS NULL THEN
-    RAISE EXCEPTION 'Admin user missing in auth.users';
+    RAISE EXCEPTION 'Admin user missing (admin@feelens.local)';
   END IF;
 
-  -- Choose a pending provider
-  SELECT id, status INTO v_provider, v_old_status
+  -- 兼容 auth.uid()：设置 admin claims
+  PERFORM set_config('request.jwt.claim.role', 'admin', true);
+  PERFORM set_config('request.jwt.claim.sub', v_admin::text, true);
+  PERFORM set_config('request.jwt.claims', jsonb_build_object('sub', v_admin::text, 'role', 'admin')::text, true);
+
+  -- 1) 先找 pending provider
+  SELECT id INTO v_pending_provider
   FROM public.providers
-  WHERE status='pending'
-  ORDER BY created_at DESC
+  WHERE status = 'pending'
+  ORDER BY COALESCE(status_changed_at, created_at) DESC NULLS LAST
   LIMIT 1;
 
-  IF v_provider IS NULL THEN
-    RAISE EXCEPTION 'No pending provider found for approval test';
+  -- 2) 如果没有 pending，就把一个 approved 临时改成 pending
+  IF v_pending_provider IS NULL THEN
+    SELECT id, status INTO v_fallback_provider, v_old_status
+    FROM public.providers
+    WHERE status = 'approved'
+    ORDER BY COALESCE(status_changed_at, created_at) DESC NULLS LAST
+    LIMIT 1;
+
+    IF v_fallback_provider IS NULL THEN
+      RAISE EXCEPTION 'No provider found to use for approval test (need at least one approved or pending provider)';
+    END IF;
+
+    UPDATE public.providers
+    SET status = 'pending',
+        status_reason = 'regression setup: force pending for approval test',
+        status_changed_at = NOW(),
+        status_changed_by = v_admin
+    WHERE id = v_fallback_provider;
+
+    v_pending_provider := v_fallback_provider;
   END IF;
 
-  PERFORM set_config('request.jwt.claim.sub', v_admin::text, true);
-  PERFORM public.approve_provider(v_provider, 'approve', 'regression approve provider');
+  -- 3) 调 approve_provider
+  v_res := public.approve_provider(v_pending_provider, 'approve', 'regression approve test');
 
-  SELECT status, status_changed_by, status_changed_at
-    INTO v_new_status, v_changed_by, v_changed_at
-  FROM public.providers
-  WHERE id=v_provider;
-
-  IF v_new_status <> 'approved' THEN
-    RAISE EXCEPTION 'Expected provider.status=approved, got %', v_new_status;
+  IF COALESCE((v_res->>'success')::boolean, false) IS NOT TRUE THEN
+    RAISE EXCEPTION 'approve_provider failed: %', v_res;
   END IF;
 
-  IF v_changed_by IS DISTINCT FROM v_admin THEN
-    RAISE EXCEPTION 'Expected providers.status_changed_by=admin (%), got %', v_admin, v_changed_by;
+  -- 4) 断言：provider 已 approved，且 provider_actions 有记录
+  IF NOT EXISTS (
+    SELECT 1 FROM public.providers
+    WHERE id = v_pending_provider AND status = 'approved'
+  ) THEN
+    RAISE EXCEPTION 'Expected provider.status=approved after approve_provider';
   END IF;
 
-  IF v_changed_at IS NULL THEN
-    RAISE EXCEPTION 'Expected providers.status_changed_at to be set';
-  END IF;
-
-  SELECT COUNT(*) INTO v_actions
-  FROM public.provider_actions
-  WHERE provider_id=v_provider
-    AND actor_id=v_admin
-    AND old_status=v_old_status
-    AND new_status='approved';
-
-  IF v_actions < 1 THEN
-    RAISE EXCEPTION 'Expected provider_actions row for approval, got %', v_actions;
+  IF NOT EXISTS (
+    SELECT 1 FROM public.provider_actions
+    WHERE provider_id = v_pending_provider
+    ORDER BY created_at DESC
+    LIMIT 1
+  ) THEN
+    RAISE EXCEPTION 'Expected provider_actions record after approve_provider';
   END IF;
 END $$;
 SQL

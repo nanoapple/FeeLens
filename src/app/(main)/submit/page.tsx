@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { FeeEntryForm } from '@/components/forms/fee-entry-form'
-import { createClient } from '@/lib/supabase/client'
+import { createServerSupabaseClient } from '@/lib/supabase/client.server'
 
 type Provider = {
   id: string
@@ -20,7 +20,7 @@ export default async function SubmitPage({ searchParams }: PageProps) {
   }
 
   // 获取 provider 信息
-  const supabase = createClient()
+  const supabase = createServerSupabaseClient()
   const { data, error } = await supabase
     .from('providers')
     .select('id, name, status')

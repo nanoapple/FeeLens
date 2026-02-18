@@ -1,8 +1,10 @@
+//src/app/(main)/entries/page.tsx
+
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { createServerSupabaseClient } from '@/lib/supabase/client.server'
 import { useIndustryList } from '@/hooks/use-industry-schema'
 
 interface EntryRow {
@@ -53,7 +55,7 @@ export default function EntriesListPage() {
 
   const fetchEntries = useCallback(async () => {
     setLoading(true)
-    const supabase = createClient()
+    const supabase = createServerSupabaseClient()
     let query = supabase.from('v_public_entries').select('*', { count: 'exact' }).order('created_at', { ascending: false }).limit(PAGE_SIZE)
     if (industryFilter) query = query.eq('industry_key', industryFilter)
     if (serviceFilter) query = query.eq('service_key', serviceFilter)

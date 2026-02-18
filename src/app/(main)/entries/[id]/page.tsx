@@ -3,7 +3,7 @@
 
 import { useState, useEffect } from 'react'
 import { useParams } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/client.browser'
 import { useIndustrySchema } from '@/hooks/use-industry-schema'
 
 interface EntryDetail {
@@ -38,15 +38,37 @@ function humanizeKey(key: string): string {
     .replace(/Gst/, 'GST')
 }
 
-function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return '\u2014'
+type UiFormat = 'currency' | 'percent' | 'hours' | 'integer' | 'number' | 'text'
+
+function inferUiFormat(fieldKey: string, prop: any): UiFormat {
+  const explicit = prop?.ui_format || prop?.uiFormat || prop?.format
+  if (explicit === 'currency' || explicit === 'percent' || explicit === 'hours' || explicit === 'integer' || explicit === 'number' || explicit === 'text') {
+    return explicit
+  }
+  const k = (fieldKey || '').toLowerCase()
+  if (k.includes('pct') || k.endsWith('_percent') || k.endsWith('_percentage') || prop?.title?.includes('%')) return 'percent'
+  if (k.includes('hour')) return 'hours'
+  if (k.includes('amount') || k.includes('fee') || k.includes('rate') || k.includes('total') || k.includes('cost')) return 'currency'
+  if (prop?.type === 'integer') return 'integer'
+  if (prop?.type === 'number') return 'number'
+  return 'text'
+}
+
+function formatBySchema(value: unknown, fieldKey: string, prop: any): string {
+  if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? 'Yes' : 'No'
   if (typeof value === 'number') {
-    if (value >= 100) return `$${value.toLocaleString('en-AU')}`
-    return value.toString()
+    const fmt = inferUiFormat(fieldKey, prop)
+    if (fmt === 'currency') return new Intl.NumberFormat('en-AU', { style: 'currency', currency: 'AUD' }).format(value)
+    if (fmt === 'percent') return `${value}%`
+    if (fmt === 'hours') return `${value} h`
+    if (fmt === 'integer') return `${Math.round(value)}`
+    return new Intl.NumberFormat('en-AU', { maximumFractionDigits: 2 }).format(value)
   }
   if (typeof value === 'string') return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
-  return JSON.stringify(value)
+  if (Array.isArray(value)) return value.join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
 
 function toNumberOrNull(value: unknown): number | null {
@@ -201,7 +223,7 @@ export default function EntryDetailPage() {
             {feeDisplayKeys.map((key) => (
               <div key={key} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
                 <span className="text-sm text-gray-600">{getLabel(feeSchemaProps, key)}</span>
-                <span className="text-sm font-medium text-gray-900">{formatValue(fb[key])}</span>
+                <span className="text-sm font-medium text-gray-900">{formatBySchema(fb[key], key, feeSchemaProps?.[key])}</span>
               </div>
             ))}
           </div>
@@ -272,7 +294,7 @@ export default function EntryDetailPage() {
               {ctxDisplayKeys.map((key) => (
                 <div key={key} className="flex justify-between py-2 border-b border-gray-100 last:border-0">
                   <span className="text-sm text-gray-600">{getLabel(ctxSchemaProps, key)}</span>
-                  <span className="text-sm font-medium text-gray-900">{formatValue(ctx[key])}</span>
+                  <span className="text-sm font-medium text-gray-900">{formatBySchema(ctx[key], key, ctxSchemaProps?.[key])}</span>
                 </div>
               ))}
             </div>

@@ -3,7 +3,7 @@
 import { useState, type FormEvent, type ChangeEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { submitEntry, type SubmitEntryParams } from '@/lib/supabase/functions'
-import { getCurrentUser } from '@/lib/supabase/client'
+import { getCurrentUser } from '@/lib/supabase/client.browser'
 
 interface FeeEntryFormProps {
   providerId: string
