@@ -477,3 +477,125 @@ export async function uploadEvidence(
     object_key: signResult.object_key,
   }
 }
+
+
+// ==========================================
+// src/lib/supabase/functions.ts — V2 补丁
+//
+// 将以下内容添加到现有 functions.ts 文件末尾。
+// 不修改任何现有函数。
+// ==========================================
+
+// ==========================================
+// 类型定义 — create-entry-v2
+// ==========================================
+
+export interface DisbursementItem {
+  label: string
+  amount: number
+  is_estimate?: boolean
+}
+
+export interface FeeBreakdown {
+  pricing_model: 'fixed' | 'hourly' | 'blended' | 'retainer' | 'conditional'
+  fixed_fee_amount?: number
+  hourly_rate?: number
+  estimated_hours?: number
+  retainer_amount?: number
+  uplift_pct?: number
+  contingency_pct?: number
+  disbursements_total?: number
+  disbursements_items?: DisbursementItem[]
+  gst_included: boolean
+  total_estimated?: number
+}
+
+export interface EntryContext {
+  matter_type?: string
+  jurisdiction?: string
+  client_type?: string
+  complexity_band?: string
+  urgency?: string
+  // conveyancing
+  property_value?: number
+  transaction_side?: string
+  property_type?: string
+  // workers compensation
+  claim_stage?: string
+  damages_claim?: boolean
+  estimated_claim_value?: number
+  // family law
+  court_stage?: string
+  children_involved?: boolean
+  // migration
+  visa_type?: string
+  application_stage?: string
+  // allow additional keys
+  [key: string]: unknown
+}
+
+export interface CreateEntryV2Params {
+  provider_id: string
+  industry_key: string
+  service_key?: string
+  fee_breakdown: FeeBreakdown
+  context?: EntryContext
+  hidden_items?: string[]
+  quote_transparency_score?: number
+  initial_quote_total?: number
+  final_total_paid?: number
+  evidence_object_key?: string
+}
+
+export interface CreateEntryV2Response {
+  success: boolean
+  entry_id?: string
+  visibility?: string
+  requires_moderation?: boolean
+  risk_flags?: string[]
+  evidence_tier?: string
+  moderation_status?: string
+  error?: string
+  details?: unknown
+}
+
+// ==========================================
+// Edge Function 调用 — create-entry-v2
+// ==========================================
+
+/**
+ * 通用多行业费用条目创建（v2）
+ * 调用 Edge Function: create-entry-v2 → RPC: create_fee_entry_v2
+ *
+ * 使用场景：
+ *   - legal_services 全部走此接口
+ *   - 未来所有新行业走此接口
+ *   - 房地产切换到 v2 后也走此接口
+ */
+export async function createEntryV2(
+  params: CreateEntryV2Params
+): Promise<CreateEntryV2Response> {
+  const supabase = createClient()
+
+  try {
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return { success: false, error: '请先登录' }
+    }
+
+    const { data, error } = await supabase.functions.invoke<CreateEntryV2Response>(
+      'create-entry-v2',
+      { body: params }
+    )
+
+    if (error) {
+      console.error('Edge Function 调用失败:', error)
+      return { success: false, error: error.message || '提交失败，请稍后重试' }
+    }
+
+    return data as CreateEntryV2Response
+  } catch (error) {
+    console.error('创建条目时发生错误:', error)
+    return { success: false, error: '网络错误，请检查连接后重试' }
+  }
+}

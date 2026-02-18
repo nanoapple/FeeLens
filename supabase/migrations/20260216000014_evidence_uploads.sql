@@ -1,7 +1,15 @@
 -- ==========================================
--- FeeLens: Evidence Upload 专家审查修复
+-- FeeLens: Evidence Upload 系统
 --
--- 修复项：
+-- 本文件包含：
+--   A. evidence_uploads 表 + RLS + 索引（之前遗漏，现补回）
+--   B. 清理旧 RPC 重载（000010 遗留）
+--   C. Evidence RPC 重写（create / confirm / link）
+--   D. GRANT EXECUTE
+--   E. Storage RLS 策略
+--   F. 旧 RPC search_path 补丁
+--
+-- 修复项（原专家审查）：
 --   P0-1: link_evidence_to_entry 只允许 uploaded + 检查过期
 --   P0-2: confirm_evidence_upload 校验 storage.objects 存在
 --   P0-3: 移除 create_evidence_upload 中对 moderation_actions 的耦合
@@ -11,10 +19,83 @@
 --
 -- 额外修复：
 --   清理 000010 留下的旧签名 RPC 重载（4 参数版本）
+--   补回遗漏的 CREATE TABLE evidence_uploads
 -- ==========================================
 
 -- ==========================================
--- 0. 清理旧的 RPC 重载
+-- A. evidence_uploads 表（补回遗漏）
+--
+-- 用途：证据文件的数据库注册层。
+-- 工作流：RPC 先在此表登记 → 返回 signed URL → 用户上传 → confirm → link
+-- 状态机：pending → uploaded → linked（或 expired）
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS evidence_uploads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- 上传者
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+
+  -- 关联的 fee_entry（可选，link 阶段填入）
+  entry_id UUID REFERENCES fee_entries(id) ON DELETE SET NULL,
+
+  -- Storage 对象路径（{user_prefix}/{uuid}.{ext}）
+  object_key TEXT NOT NULL,
+
+  -- 文件元信息
+  mime_type VARCHAR(50) NOT NULL,
+  file_size_bytes BIGINT NOT NULL,
+
+  -- 状态机
+  status VARCHAR(20) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'uploaded', 'linked', 'expired', 'deleted')),
+
+  -- 签名 URL 过期时间（默认 30 分钟）
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 minutes'),
+
+  -- 上传确认时间
+  uploaded_at TIMESTAMPTZ,
+
+  -- 时间戳
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 索引
+CREATE INDEX IF NOT EXISTS idx_evidence_uploads_user
+  ON evidence_uploads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_uploads_entry
+  ON evidence_uploads(entry_id)
+  WHERE entry_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_evidence_uploads_status
+  ON evidence_uploads(status, expires_at)
+  WHERE status = 'pending';
+
+-- RLS
+ALTER TABLE evidence_uploads ENABLE ROW LEVEL SECURITY;
+
+-- 用户可读自己的上传记录
+CREATE POLICY "users_read_own_uploads"
+ON evidence_uploads FOR SELECT
+USING (user_id = auth.uid());
+
+-- admin/moderator 可读全部
+CREATE POLICY "admins_read_all_uploads"
+ON evidence_uploads FOR SELECT
+USING (
+  EXISTS (
+    SELECT 1 FROM user_roles
+    WHERE user_id = auth.uid()
+      AND role IN ('admin', 'moderator')
+  )
+);
+
+-- 不允许客户端直接写（只走 RPC）
+
+-- 表级权限
+GRANT SELECT ON evidence_uploads TO authenticated;
+
+-- ==========================================
+-- B. 清理旧的 RPC 重载
 --    migration 000010 创建了带 p_user_id/p_admin_id 的版本，
 --    migration 000013 用 CREATE OR REPLACE 创建了新签名版本，
 --    但 PG 把不同参数签名视为不同函数 → 产生了重载。
@@ -34,7 +115,7 @@ DROP FUNCTION IF EXISTS approve_provider(UUID, UUID, VARCHAR, TEXT);
 DROP FUNCTION IF EXISTS resolve_dispute(UUID, UUID, VARCHAR, TEXT, TEXT);
 
 -- ==========================================
--- 1. create_evidence_upload（重写）
+-- C1. create_evidence_upload（重写）
 --    修复：移除审计耦合 + 路径去冗余 + SET search_path
 -- ==========================================
 CREATE OR REPLACE FUNCTION create_evidence_upload(
@@ -133,7 +214,7 @@ END;
 $$;
 
 -- ==========================================
--- 2. confirm_evidence_upload（重写）
+-- C2. confirm_evidence_upload（重写）
 --    修复：校验 storage.objects 中文件确实存在
 -- ==========================================
 CREATE OR REPLACE FUNCTION confirm_evidence_upload(
@@ -197,7 +278,7 @@ END;
 $$;
 
 -- ==========================================
--- 3. link_evidence_to_entry（重写）
+-- C3. link_evidence_to_entry（重写）
 --    修复：只允许 uploaded 状态 + 检查过期
 -- ==========================================
 CREATE OR REPLACE FUNCTION link_evidence_to_entry(
@@ -266,7 +347,7 @@ END;
 $$;
 
 -- ==========================================
--- 4. GRANT EXECUTE（完整参数签名，避免歧义）
+-- D. GRANT EXECUTE（完整参数签名，避免歧义）
 -- ==========================================
 
 -- Evidence RPC
@@ -282,7 +363,7 @@ GRANT EXECUTE ON FUNCTION approve_provider(UUID, VARCHAR, TEXT) TO authenticated
 GRANT EXECUTE ON FUNCTION resolve_dispute(UUID, VARCHAR, TEXT, TEXT) TO authenticated;
 
 -- ==========================================
--- 5. 修复 Storage RLS 策略
+-- E. 修复 Storage RLS 策略
 -- ==========================================
 
 DROP POLICY IF EXISTS "users_read_own_evidence_files" ON storage.objects;
@@ -317,7 +398,7 @@ WITH CHECK (
 );
 
 -- ==========================================
--- 6. SET search_path 补到旧 RPC（完整签名）
+-- F. SET search_path 补到旧 RPC（完整签名）
 -- ==========================================
 
 ALTER FUNCTION submit_fee_entry(UUID, VARCHAR, DECIMAL, BOOLEAN, DECIMAL, DECIMAL, DECIMAL, DECIMAL, JSONB, INT, DECIMAL, DECIMAL) SET search_path = public, auth;
