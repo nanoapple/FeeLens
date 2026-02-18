@@ -84,6 +84,7 @@ export interface ModerateEntryParams {
 export interface ModerateEntryResponse {
   success: boolean
   new_visibility?: string
+  moderation_status?: string
   error?: string
 }
 
@@ -113,7 +114,37 @@ export interface ResolveDisputeResponse {
 }
 
 // ==========================================
-// Evidence upload
+// Report-only resolution（不动 entry）
+//
+// 对齐 DB: resolve_entry_report(p_report_id, p_action, p_note)
+// 见 migration: 20260218000004_patch_resolve_entry_report.sql
+//
+// 关键：这三个 action 都不修改 fee_entries 任何字段。
+// 如需连带处理 entry，请使用 moderateEntry()（走 Entries tab）。
+// ==========================================
+
+export type ResolveReportAction = 'resolve' | 'dismiss' | 'triage'
+
+export interface ResolveEntryReportParams {
+  report_id: string
+  /**
+   * resolve  → entry_reports.status = 'resolved'（认定举报有效，已处理）
+   * dismiss  → entry_reports.status = 'dismissed'（驳回，举报无效）
+   * triage   → entry_reports.status = 'triaged'（标记待进一步调查，仅 open 可用）
+   */
+  action: ResolveReportAction
+  note?: string
+}
+
+export interface ResolveEntryReportResponse {
+  success: boolean
+  old_status?: string
+  new_status?: string
+  error?: string
+}
+
+// ==========================================
+// Evidence Upload
 // ==========================================
 
 export interface RequestUploadUrlParams {
@@ -149,18 +180,8 @@ export interface LinkEvidenceResponse {
 }
 
 // ==========================================
-// V2 (schema-driven) create-entry-v2
+// create-entry-v2
 // ==========================================
-
-export type PricingModel =
-  | 'hourly'
-  | 'fixed'
-  | 'capped'
-  | 'retainer'
-  | 'contingency_pct'
-  | 'uplift'
-  | 'blended'
-  | 'other'
 
 export interface DisbursementItem {
   label: string
@@ -169,17 +190,17 @@ export interface DisbursementItem {
 }
 
 export interface FeeBreakdown {
-  pricing_model: PricingModel
+  pricing_model: 'fixed' | 'hourly' | 'blended' | 'retainer' | 'conditional'
+  fixed_fee_amount?: number
   hourly_rate?: number
   estimated_hours?: number
-  fixed_fee_amount?: number
-  cap_amount?: number
   retainer_amount?: number
-  gst_included?: boolean
-  disbursements_items?: DisbursementItem[]
+  uplift_pct?: number
+  contingency_pct?: number
   disbursements_total?: number
+  disbursements_items?: DisbursementItem[]
+  gst_included: boolean
   total_estimated?: number
-  [key: string]: unknown
 }
 
 export interface EntryContext {
@@ -187,21 +208,17 @@ export interface EntryContext {
   jurisdiction?: string
   client_type?: string
   complexity_band?: string
-  // conveyancing
+  urgency?: string
   property_value?: number
   transaction_side?: string
   property_type?: string
-  // workers compensation
   claim_stage?: string
   damages_claim?: boolean
   estimated_claim_value?: number
-  // family law
   court_stage?: string
   children_involved?: boolean
-  // migration
   visa_type?: string
   application_stage?: string
-  // allow additional keys
   [key: string]: unknown
 }
 

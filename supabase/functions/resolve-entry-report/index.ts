@@ -1,9 +1,27 @@
 // ==========================================
-// Edge Function: resolve-dispute
+// Edge Function: resolve-entry-report
+//
 // 职责：JWT 验证 + 输入校验 + 调用 RPC
-// 安全模型：不传 admin_id，RPC 内部用 auth.uid()
+// 对应 DB: resolve_entry_report(p_report_id, p_action, p_note)
+// 见 migration: 20260218000004_patch_resolve_entry_report.sql
+//
+// 安全模型：不传 actor_id，RPC 内部用 auth.uid() + is_moderator_or_admin()
+//
+// 关键语义（只动 entry_reports，不动 fee_entries）：
+//   dismiss → status = 'dismissed'（举报无效，关闭工单）
+//   triage  → status = 'triaged'  （待进一步调查）
+//   resolve → status = 'resolved' （举报有效已处理）
+//
+// HTTP 状态码映射（与 RPC 返回语义对齐）：
+//   200 → 成功
+//   400 → 输入校验失败 / 无效 action
+//   401 → JWT 缺失或无效
+//   403 → 权限不足（非 admin/moderator）
+//   409 → 状态机冲突（report 已终态，或 triage 非 open 状态）
+//   500 → DB / 运行时异常
 // ==========================================
 
+// ✅ 正确（与 deno.json 的 imports 匹配）
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 
@@ -24,33 +42,24 @@ function buildCorsHeaders(reqOrigin: string | null): Record<string, string> {
   }
 }
 
-// ── Zod Schema ───────────────────────────────────────────────────────────────
-const ResolveDisputeSchema = z.object({
-  dispute_id: z.string().uuid('Invalid dispute ID'),
-  // 枚举与 DB CHECK + RPC 显式校验完全对齐：
-  //   disputes.outcome CHECK (migration 20260216000000)
-  //   resolve_dispute() IF NOT IN (...) (migration 20260216000013)
-  outcome: z.enum(['maintained', 'corrected', 'removed', 'partial_hidden'], {
-    errorMap: () => ({
-      message: "outcome must be 'maintained', 'corrected', 'removed', or 'partial_hidden'",
-    }),
+// ── Zod Schema ────────────────────────────────────────────────────────────────
+const ResolveEntryReportSchema = z.object({
+  report_id: z.string().uuid('Invalid report ID'),
+  action: z.enum(['resolve', 'dismiss', 'triage'], {
+    errorMap: () => ({ message: "action must be 'resolve', 'dismiss', or 'triage'" }),
   }),
-  // min(20)：防止"ok"/"noted"类敷衍写入，要求管理员给出实质性说明
-  platform_response: z.string()
-    .min(20, 'Platform response must be at least 20 characters')
-    .max(5000, 'Platform response cannot exceed 5000 characters'),
-  resolution_note: z.string().max(2000).optional(),
+  note: z.string().max(2000).optional(),
 })
 
-// resolve_dispute() RPC 统一返回结构（migration 20260216000013）
-// success: boolean 是约定合约——所有 RPC 均遵循此范式
+// resolve_entry_report() RPC 统一返回结构（migration 20260218000004）
 interface RpcResult {
   success: boolean
-  outcome?: string
+  old_status?: string
+  new_status?: string
   error?: string
 }
 
-type ResolveDisputeInput = z.infer<typeof ResolveDisputeSchema>
+type ResolveEntryReportInput = z.infer<typeof ResolveEntryReportSchema>
 
 // ── Handler ──────────────────────────────────────────────────────────────────
 Deno.serve(async (req: Request): Promise<Response> => {
@@ -87,7 +96,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
 
     // 2. 输入校验（Zod）
     const body: unknown = await req.json()
-    const validation = ResolveDisputeSchema.safeParse(body)
+    const validation = ResolveEntryReportSchema.safeParse(body)
 
     if (!validation.success) {
       const errors = validation.error.errors.map(
@@ -99,17 +108,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
       )
     }
 
-    const data: ResolveDisputeInput = validation.data
+    const data: ResolveEntryReportInput = validation.data
 
-    // 3. 调用 RPC（不传 admin_id，RPC 内部用 auth.uid() + 角色校验）
-    console.log(`Admin ${user.id} resolving dispute ${data.dispute_id}, outcome=${data.outcome}`)
+    // 3. 调用 RPC（薄层：不传 actor_id，DB 内部用 auth.uid()）
+    console.log(`Admin ${user.id} resolving report ${data.report_id}, action=${data.action}`)
 
-    const { data: rpcData, error: rpcError } = await supabase.rpc('resolve_dispute', {
-      p_dispute_id:       data.dispute_id,
-      p_outcome:          data.outcome,
-      p_platform_response: data.platform_response,
-      p_resolution_note:  data.resolution_note ?? null,
-    })
+    const { data: rpcData, error: rpcError } = await supabase.rpc(
+      'resolve_entry_report',
+      {
+        p_report_id: data.report_id,
+        p_action:    data.action,
+        p_note:      data.note ?? null,
+      }
+    )
 
     // 4a. DB / 网络级错误（rpc() 本身抛出）
     if (rpcError) {
@@ -120,14 +131,23 @@ Deno.serve(async (req: Request): Promise<Response> => {
       )
     }
 
-    // 4b. RPC 业务错误
-    // 用 success === false 判断，而非 'error' in rpcData。
-    // 原因：'error' in rpcData 在 RPC 成功但返回 { error: null } 时会误判为失败。
-    // resolve_dispute() 已遵循 { success: boolean, error?: string } 范式。
+    // 4b. RPC 业务错误（success: false）——按错误语义映射 HTTP 状态码
+    //
+    // RPC 统一返回 { success: boolean, error?: string }。
+    // success: false 路径：
+    //   'Unauthorized: ...'          → 403
+    //   'terminal state: ...'        → 409（状态机冲突）
+    //   'Cannot triage: ...'         → 409（状态机冲突）
+    //   其余（not found / invalid）  → 400
     const result = rpcData as RpcResult
     if (result.success === false) {
-      const errMsg = result.error ?? 'Unknown error'
-      const httpStatus = errMsg.includes('Unauthorized') ? 403 : 400
+      const errMsg: string = result.error ?? 'Unknown error'
+      let httpStatus = 400
+      if (errMsg.includes('Unauthorized')) {
+        httpStatus = 403
+      } else if (errMsg.includes('terminal state') || errMsg.includes('Cannot triage')) {
+        httpStatus = 409
+      }
       return new Response(
         JSON.stringify({ success: false, error: errMsg }),
         { status: httpStatus, headers: { ...cors, 'Content-Type': 'application/json' } }
@@ -139,7 +159,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
       JSON.stringify(rpcData),
       { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } }
     )
-
   } catch (err: unknown) {
     console.error('Edge Function error:', err)
     return new Response(

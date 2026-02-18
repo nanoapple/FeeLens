@@ -18,6 +18,8 @@ import {
   ApproveProviderResponse,
   ResolveDisputeParams,
   ResolveDisputeResponse,
+  ResolveEntryReportParams,
+  ResolveEntryReportResponse,
   RequestUploadUrlParams,
   RequestUploadUrlResponse,
   CreateEntryV2Params,
@@ -120,6 +122,34 @@ export async function resolveDispute(params: ResolveDisputeParams): Promise<Reso
     return data as ResolveDisputeResponse
   } catch (e) {
     console.error('处理争议时发生错误:', e)
+    return { success: false, error: '网络错误' }
+  }
+}
+
+// ==========================================
+// Report-only resolution
+//
+// 只动 entry_reports，不动 fee_entries。
+// 对应 DB: resolve_entry_report(p_report_id, p_action, p_note)
+// 见 migration: 20260218000004_patch_resolve_entry_report.sql
+//
+// 调用场景：Reports tab 中 Dismiss / Triage / Resolve 操作。
+// 如需同时处理 entry，另外调用 moderateEntry()（在 Entries tab）。
+// ==========================================
+
+export async function resolveEntryReport(
+  params: ResolveEntryReportParams
+): Promise<ResolveEntryReportResponse> {
+  try {
+    const { data, error } = await invokeEdge<ResolveEntryReportResponse>(
+      'resolve-entry-report',
+      params as any,
+      true
+    )
+    if (error) return { success: false, error }
+    return data as ResolveEntryReportResponse
+  } catch (e) {
+    console.error('处理举报时发生错误:', e)
     return { success: false, error: '网络错误' }
   }
 }
