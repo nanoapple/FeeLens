@@ -1,23 +1,172 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 // ==========================================
-// FeeLens Landing Page
+// FeeLens Landing Page — Multi-Industry
 // Aesthetic: Sharp minimal with warm Australian tones
-// Target: Young renters/owners who are fed up with opaque fees
+// Target: Anyone tired of opaque fees across any industry
 // ==========================================
 
-const HIDDEN_FEE_EXAMPLES = [
+// ===== DATA =====
+
+const SEARCH_TABS = [
+  { id: 'property', icon: '🏠', label: 'Property', placeholder: 'Search by suburb, postcode, or agency name...' },
+  { id: 'auto', icon: '🚗', label: 'Auto', placeholder: 'Search by suburb, workshop name, or car brand...' },
+  { id: 'construction', icon: '🔨', label: 'Reno', placeholder: 'Search by trade, suburb, or builder name...' },
+  { id: 'legal', icon: '⚖️', label: 'Legal', placeholder: 'Search by practice area, suburb, or firm name...' },
+  { id: 'health', icon: '🩺', label: 'Health', placeholder: 'Search by specialty, suburb, or clinic name...' },
+  { id: 'more', icon: '＋', label: 'More', placeholder: 'Search across all industries...' },
+]
+
+const ROTATING_FEES = [
   'Annual statement fee — $85',
   'Card payment surcharge — 1.5%',
-  'Routine inspection fee — $110',
   'Maintenance coordination markup — 15%',
-  'End of year audit fee — $120',
+  'Diagnostic fee — $120 (not applied to repair)',
+  'Conveyancing disbursements — $900 undisclosed',
+  'Builder variation clause — uncapped',
+  'Specialist gap fee — $185 surprise',
+  'SaaS price hike — 40% after Year 1',
   'Advertising fee for re-letting — $350',
   'After-hours call-out fee — $95',
-  'Insurance admin charge — $65',
 ]
+
+const INDUSTRIES_MAIN = [
+  { icon: '🏠', name: 'Property\nManagement', count: '2,400+ reports' },
+  { icon: '🚗', name: 'Auto Repair\n& Service', count: '1,850+ reports' },
+  { icon: '🔨', name: 'Construction\n& Renovation', count: '1,200+ reports' },
+  { icon: '⚖️', name: 'Legal\nServices', count: '980+ reports' },
+  { icon: '🩺', name: 'Private\nHealthcare', count: '760+ reports' },
+]
+
+const INDUSTRIES_SECONDARY = [
+  { icon: '💼', name: 'Business Services' },
+  { icon: '💰', name: 'Financial Services' },
+  { icon: '🎓', name: 'Education' },
+  { icon: '🚙', name: 'Second-hand Cars' },
+  { icon: '☁️', name: 'SaaS Subscriptions' },
+]
+
+const SAMPLE_REPORTS: ReportData[] = [
+  {
+    industry: 'property',
+    industryLabel: '🏠 Property',
+    time: '2 hours ago',
+    title: 'Hidden "maintenance coordination" markup — 18%',
+    body: 'Was charged a coordination fee on top of every maintenance job. Never disclosed in the original contract. Actual plumber cost was $320, I paid $378.',
+    tag: 'negative',
+    tagLabel: '⚠️ Hidden fee',
+    location: '📍 Parramatta, NSW 2150',
+    votes: 24,
+  },
+  {
+    industry: 'auto',
+    industryLabel: '🚗 Auto',
+    time: '5 hours ago',
+    title: 'Honest quote, fair price — brake pad replacement',
+    body: 'Quoted $480 for front brake pads + machining. Final bill was exactly $480 including GST. Workshop even showed me the old pads. Would go back.',
+    tag: 'positive',
+    tagLabel: '✓ Fair deal',
+    location: '📍 Brunswick, VIC 3056',
+    votes: 41,
+  },
+  {
+    industry: 'legal',
+    industryLabel: '⚖️ Legal',
+    time: '1 day ago',
+    title: 'Conveyancing quoted $1,200, ended up $2,100',
+    body: 'The base fee was as quoted but "disbursements" added $900 — title search, PEXA fees, and admin charges that were never mentioned up front.',
+    tag: 'negative',
+    tagLabel: '⚠️ Quote exceeded',
+    location: '📍 Adelaide, SA 5000',
+    votes: 38,
+  },
+  {
+    industry: 'construction',
+    industryLabel: '🔨 Construction',
+    time: '1 day ago',
+    title: 'Bathroom reno — builder was upfront about every cost',
+    body: 'Full bathroom renovation for $18,500. Builder provided itemised breakdown before starting. Only $200 variation for unexpected waterproofing, explained with photos.',
+    tag: 'positive',
+    tagLabel: '✓ Transparent',
+    location: '📍 Indooroopilly, QLD 4068',
+    votes: 56,
+  },
+  {
+    industry: 'healthcare',
+    industryLabel: '🩺 Healthcare',
+    time: '2 days ago',
+    title: 'Specialist appointment gap fee not disclosed',
+    body: 'Referred to a dermatologist — reception said "you\'ll have a small gap." The gap turned out to be $185 on top of the Medicare rebate. No prior written estimate.',
+    tag: 'negative',
+    tagLabel: '⚠️ Undisclosed gap',
+    location: '📍 Subiaco, WA 6008',
+    votes: 33,
+  },
+  {
+    industry: 'education',
+    industryLabel: '🎓 Education',
+    time: '3 days ago',
+    title: 'Tutoring centre — clear pricing and no lock-in',
+    body: 'Quoted $65/hr for Year 12 maths. No enrolment fee, no material fee, and they let us pause during school holidays at no charge. Refreshingly honest.',
+    tag: 'positive',
+    tagLabel: '✓ Great value',
+    location: '📍 Box Hill, VIC 3128',
+    votes: 29,
+  },
+]
+
+const STATS = [
+  { number: '8,200+', label: 'Fee reports' },
+  { number: '3,400+', label: 'Businesses listed' },
+  { number: '10', label: 'Industries' },
+  { number: '23%', label: 'Avg hidden fee gap' },
+  { number: '8', label: 'States & territories' },
+]
+
+const STEPS = [
+  {
+    step: '1',
+    title: 'Search any service',
+    desc: 'Find by suburb, postcode, business name, or industry. We cover property managers, mechanics, lawyers, builders, doctors, and more.',
+  },
+  {
+    step: '2',
+    title: 'Share what you paid',
+    desc: 'Anonymously submit your fees — both the good and the bad. Upload evidence for verification. It takes under 3 minutes.',
+  },
+  {
+    step: '3',
+    title: 'Compare & negotiate',
+    desc: 'See how your provider stacks up. Use real community data to push back on unfair charges or find better alternatives.',
+  },
+]
+
+const FEATURES = [
+  { icon: '🔒', title: 'Anonymous by design', desc: 'Your identity is never revealed. We use pseudonymous IDs and purge IP data after 30 days.' },
+  { icon: '📊', title: 'Quote vs Reality', desc: 'Compare what you were quoted against what you actually paid. Expose the gap across any industry.' },
+  { icon: '🛡️', title: 'Verified & moderated', desc: 'Every submission goes through risk checks and community moderation. Evidence-backed, no fake reviews.' },
+  { icon: '🗺️', title: 'Search by location', desc: 'Find fees by suburb or postcode. Know the going rate in your area before you commit.' },
+  { icon: '⚖️', title: 'Fair dispute process', desc: 'Businesses can respond to submissions. Our team reviews disputes within 48 hours.' },
+  { icon: '🇦🇺', title: 'Made for Australia', desc: 'Covers all states and territories. GST-aware. Built around Australian norms and regulations.' },
+]
+
+// ===== TYPES =====
+
+interface ReportData {
+  industry: string
+  industryLabel: string
+  time: string
+  title: string
+  body: string
+  tag: 'positive' | 'negative' | 'neutral'
+  tagLabel: string
+  location: string
+  votes: number
+}
+
+// ===== COMPONENTS =====
 
 function RotatingFee() {
   const [index, setIndex] = useState(0)
@@ -27,7 +176,7 @@ function RotatingFee() {
     const interval = setInterval(() => {
       setVisible(false)
       setTimeout(() => {
-        setIndex((prev) => (prev + 1) % HIDDEN_FEE_EXAMPLES.length)
+        setIndex((prev) => (prev + 1) % ROTATING_FEES.length)
         setVisible(true)
       }, 400)
     }, 2800)
@@ -35,88 +184,132 @@ function RotatingFee() {
   }, [])
 
   return (
-    <span
+    <div className="fl-rotating-fee">
+      Surprise fee of the day:{' '}
+      <span
+        style={{
+          display: 'inline-block',
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateY(0)' : 'translateY(6px)',
+          transition: 'opacity 0.4s ease, transform 0.4s ease',
+          color: 'var(--accent)',
+          fontStyle: 'italic',
+        }}
+      >
+        &ldquo;{ROTATING_FEES[index]}&rdquo;
+      </span>
+    </div>
+  )
+}
+
+function TabbedSearch() {
+  const [activeTab, setActiveTab] = useState('property')
+  const [query, setQuery] = useState('')
+
+  const currentTab = SEARCH_TABS.find((t) => t.id === activeTab)
+
+  return (
+    <div className="fl-search-block">
+      <div className="fl-search-tabs">
+        {SEARCH_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            className={`fl-search-tab${activeTab === tab.id ? ' active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            <span className="fl-search-tab-icon">{tab.icon}</span>
+            <span className="fl-search-tab-label">{tab.label}</span>
+            <span className="fl-search-tab-dot" />
+          </button>
+        ))}
+      </div>
+      <div className="fl-search-box">
+        <span className="fl-search-icon">🔍</span>
+        <input
+          type="text"
+          placeholder={currentTab?.placeholder}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button className="fl-search-btn" type="button">
+          Search
+        </button>
+      </div>
+      <div className="fl-search-hint">
+        <span>Popular:</span>
+        <strong>Sydney CBD</strong> · <strong>Melbourne 3000</strong> ·{' '}
+        <strong>Ray White</strong> · <strong>LJ Hooker</strong>
+      </div>
+    </div>
+  )
+}
+
+function AnimatedBlock({
+  children,
+  delay = 0,
+}: {
+  children: React.ReactNode
+  delay?: number
+}) {
+  const [visible, setVisible] = useState(false)
+
+  const ref = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return
+      const observer = new IntersectionObserver(
+        ([entry]) => {
+          if (entry.isIntersecting) {
+            setTimeout(() => setVisible(true), delay)
+            observer.unobserve(node)
+          }
+        },
+        { threshold: 0.1, rootMargin: '0px 0px -40px 0px' }
+      )
+      observer.observe(node)
+    },
+    [delay]
+  )
+
+  return (
+    <div
+      ref={ref}
       style={{
-        display: 'inline-block',
         opacity: visible ? 1 : 0,
-        transform: visible ? 'translateY(0)' : 'translateY(8px)',
-        transition: 'opacity 0.4s ease, transform 0.4s ease',
-        color: '#E8590C',
-        fontStyle: 'italic',
+        transform: visible ? 'translateY(0)' : 'translateY(24px)',
+        transition: `all 0.7s ${delay}ms cubic-bezier(0.22, 1, 0.36, 1)`,
       }}
     >
-      &ldquo;{HIDDEN_FEE_EXAMPLES[index]}&rdquo;
-    </span>
+      {children}
+    </div>
   )
 }
 
-function StatCard({ number, label, delay }: { number: string; label: string; delay: number }) {
-  const [show, setShow] = useState(false)
-  useEffect(() => {
-    const t = setTimeout(() => setShow(true), delay)
-    return () => clearTimeout(t)
-  }, [delay])
-
+function ReportCard({ report }: { report: ReportData }) {
   return (
-    <div
-      style={{
-        opacity: show ? 1 : 0,
-        transform: show ? 'translateY(0)' : 'translateY(24px)',
-        transition: 'all 0.7s cubic-bezier(0.22, 1, 0.36, 1)',
-        textAlign: 'center',
-      }}
-    >
-      <div style={{ fontSize: '3rem', fontWeight: 800, letterSpacing: '-0.04em', lineHeight: 1, color: '#1a1a1a' }}>
-        {number}
+    <div className="fl-report-card">
+      <div className="fl-report-header">
+        <span className={`fl-report-industry ${report.industry}`}>
+          {report.industryLabel}
+        </span>
+        <span className="fl-report-time">{report.time}</span>
       </div>
-      <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#888', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-        {label}
+      <div className="fl-report-body">
+        <h4>{report.title}</h4>
+        <p>{report.body}</p>
+      </div>
+      <div className="fl-report-meta">
+        <span className={`fl-report-tag ${report.tag}`}>{report.tagLabel}</span>
+        <span className="fl-report-location">{report.location}</span>
+        <span className="fl-report-votes">👍 {report.votes}</span>
       </div>
     </div>
   )
 }
 
-function HowItWorksStep({ step, title, desc, delay }: { step: string; title: string; desc: string; delay: number }) {
-  const [show, setShow] = useState(false)
-  useEffect(() => {
-    const t = setTimeout(() => setShow(true), delay)
-    return () => clearTimeout(t)
-  }, [delay])
-
-  return (
-    <div
-      style={{
-        opacity: show ? 1 : 0,
-        transform: show ? 'translateY(0)' : 'translateY(20px)',
-        transition: 'all 0.6s cubic-bezier(0.22, 1, 0.36, 1)',
-        flex: 1,
-        minWidth: 220,
-      }}
-    >
-      <div style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        width: 40,
-        height: 40,
-        borderRadius: '50%',
-        background: '#1a1a1a',
-        color: '#fff',
-        fontSize: '0.9rem',
-        fontWeight: 700,
-        marginBottom: '1rem',
-      }}>
-        {step}
-      </div>
-      <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '0.5rem', color: '#1a1a1a' }}>{title}</h3>
-      <p style={{ fontSize: '0.95rem', color: '#666', lineHeight: 1.6 }}>{desc}</p>
-    </div>
-  )
-}
+// ===== PAGE =====
 
 export default function HomePage() {
   const [heroLoaded, setHeroLoaded] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     const t = setTimeout(() => setHeroLoaded(true), 100)
@@ -125,497 +318,133 @@ export default function HomePage() {
 
   return (
     <>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Newsreader:ital,wght@0,400;0,600;1,400&display=swap');
-
-        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        html { scroll-behavior: smooth; }
-        
-        body {
-          font-family: 'Outfit', -apple-system, sans-serif;
-          background: #FAFAF8;
-          color: #1a1a1a;
-          -webkit-font-smoothing: antialiased;
-        }
-
-        ::selection {
-          background: #E8590C;
-          color: white;
-        }
-
-        .fl-hero-bg {
-          position: absolute;
-          inset: 0;
-          overflow: hidden;
-          z-index: 0;
-        }
-
-        .fl-hero-bg::before {
-          content: '';
-          position: absolute;
-          top: -40%;
-          right: -20%;
-          width: 80vw;
-          height: 80vw;
-          max-width: 900px;
-          max-height: 900px;
-          border-radius: 50%;
-          background: radial-gradient(circle, rgba(232, 89, 12, 0.06) 0%, transparent 70%);
-        }
-
-        .fl-hero-bg::after {
-          content: '';
-          position: absolute;
-          bottom: -20%;
-          left: -10%;
-          width: 50vw;
-          height: 50vw;
-          max-width: 600px;
-          max-height: 600px;
-          border-radius: 50%;
-          background: radial-gradient(circle, rgba(26, 26, 26, 0.03) 0%, transparent 70%);
-        }
-
-        .fl-grain {
-          position: fixed;
-          inset: 0;
-          pointer-events: none;
-          z-index: 9999;
-          opacity: 0.025;
-          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-          background-repeat: repeat;
-          background-size: 256px;
-        }
-
-        .fl-nav {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          z-index: 100;
-          padding: 1.25rem 2rem;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: rgba(250, 250, 248, 0.85);
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-          border-bottom: 1px solid rgba(0,0,0,0.04);
-        }
-
-        .fl-nav-logo {
-          font-size: 1.3rem;
-          font-weight: 800;
-          letter-spacing: -0.03em;
-          color: #1a1a1a;
-          text-decoration: none;
-        }
-
-        .fl-nav-logo span {
-          color: #E8590C;
-        }
-
-        .fl-nav-links {
-          display: flex;
-          gap: 2rem;
-          align-items: center;
-        }
-
-        .fl-nav-links a {
-          font-size: 0.88rem;
-          font-weight: 500;
-          color: #666;
-          text-decoration: none;
-          transition: color 0.2s;
-          letter-spacing: 0.01em;
-        }
-
-        .fl-nav-links a:hover { color: #1a1a1a; }
-
-        .fl-btn-primary {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.7rem 1.6rem;
-          background: #1a1a1a;
-          color: #fff;
-          border: none;
-          border-radius: 100px;
-          font-family: 'Outfit', sans-serif;
-          font-size: 0.88rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.25s cubic-bezier(0.22, 1, 0.36, 1);
-          text-decoration: none;
-          letter-spacing: 0.01em;
-        }
-
-        .fl-btn-primary:hover {
-          background: #E8590C;
-          transform: translateY(-1px);
-          box-shadow: 0 8px 24px rgba(232, 89, 12, 0.2);
-        }
-
-        .fl-btn-outline {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.7rem 1.6rem;
-          background: transparent;
-          color: #1a1a1a;
-          border: 1.5px solid #ddd;
-          border-radius: 100px;
-          font-family: 'Outfit', sans-serif;
-          font-size: 0.88rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.25s ease;
-          text-decoration: none;
-        }
-
-        .fl-btn-outline:hover {
-          border-color: #1a1a1a;
-          background: rgba(0,0,0,0.02);
-        }
-
-        .fl-hero {
-          position: relative;
-          min-height: 100vh;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          padding: 8rem 2rem 4rem;
-          max-width: 1200px;
-          margin: 0 auto;
-        }
-
-        .fl-hero-tag {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          padding: 0.4rem 1rem;
-          background: rgba(232, 89, 12, 0.08);
-          border-radius: 100px;
-          font-size: 0.8rem;
-          font-weight: 600;
-          color: #E8590C;
-          margin-bottom: 2rem;
-          width: fit-content;
-          letter-spacing: 0.02em;
-        }
-
-        .fl-hero h1 {
-          font-size: clamp(2.8rem, 6vw, 5rem);
-          font-weight: 900;
-          line-height: 1.05;
-          letter-spacing: -0.04em;
-          color: #1a1a1a;
-          max-width: 800px;
-          margin-bottom: 1.5rem;
-        }
-
-        .fl-hero-sub {
-          font-family: 'Newsreader', Georgia, serif;
-          font-size: clamp(1.1rem, 2vw, 1.35rem);
-          line-height: 1.65;
-          color: #666;
-          max-width: 560px;
-          margin-bottom: 1rem;
-        }
-
-        .fl-hero-rotating {
-          min-height: 2rem;
-          margin-bottom: 2.5rem;
-          font-family: 'Newsreader', Georgia, serif;
-          font-size: 1.05rem;
-        }
-
-        .fl-search-bar {
-          display: flex;
-          max-width: 520px;
-          border-radius: 100px;
-          overflow: hidden;
-          border: 1.5px solid #e0e0e0;
-          background: #fff;
-          transition: border-color 0.2s, box-shadow 0.2s;
-        }
-
-        .fl-search-bar:focus-within {
-          border-color: #E8590C;
-          box-shadow: 0 0 0 3px rgba(232, 89, 12, 0.08);
-        }
-
-        .fl-search-bar input {
-          flex: 1;
-          border: none;
-          outline: none;
-          padding: 0.9rem 1.5rem;
-          font-family: 'Outfit', sans-serif;
-          font-size: 0.95rem;
-          color: #1a1a1a;
-          background: transparent;
-        }
-
-        .fl-search-bar input::placeholder { color: #bbb; }
-
-        .fl-search-bar button {
-          padding: 0.9rem 1.8rem;
-          background: #1a1a1a;
-          color: #fff;
-          border: none;
-          font-family: 'Outfit', sans-serif;
-          font-size: 0.88rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background 0.2s;
-          white-space: nowrap;
-        }
-
-        .fl-search-bar button:hover { background: #E8590C; }
-
-        .fl-section {
-          padding: 6rem 2rem;
-          max-width: 1200px;
-          margin: 0 auto;
-        }
-
-        .fl-section-label {
-          font-size: 0.75rem;
-          font-weight: 700;
-          letter-spacing: 0.12em;
-          text-transform: uppercase;
-          color: #E8590C;
-          margin-bottom: 1rem;
-        }
-
-        .fl-section-title {
-          font-size: clamp(1.8rem, 3.5vw, 2.6rem);
-          font-weight: 800;
-          letter-spacing: -0.03em;
-          line-height: 1.15;
-          color: #1a1a1a;
-          margin-bottom: 1rem;
-          max-width: 600px;
-        }
-
-        .fl-section-desc {
-          font-family: 'Newsreader', Georgia, serif;
-          font-size: 1.1rem;
-          line-height: 1.65;
-          color: #888;
-          max-width: 520px;
-          margin-bottom: 3rem;
-        }
-
-        .fl-stats-row {
-          display: flex;
-          gap: 4rem;
-          flex-wrap: wrap;
-          padding: 3rem 0;
-          border-top: 1px solid #eee;
-          border-bottom: 1px solid #eee;
-          justify-content: center;
-        }
-
-        .fl-steps-row {
-          display: flex;
-          gap: 3rem;
-          flex-wrap: wrap;
-        }
-
-        .fl-card-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-          gap: 1.5rem;
-        }
-
-        .fl-feature-card {
-          padding: 2rem;
-          background: #fff;
-          border: 1px solid #eee;
-          border-radius: 16px;
-          transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-        }
-
-        .fl-feature-card:hover {
-          border-color: #E8590C;
-          transform: translateY(-4px);
-          box-shadow: 0 12px 40px rgba(0,0,0,0.06);
-        }
-
-        .fl-feature-icon {
-          width: 48px;
-          height: 48px;
-          border-radius: 12px;
-          background: #FAFAF8;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 1.4rem;
-          margin-bottom: 1.25rem;
-        }
-
-        .fl-feature-card h3 {
-          font-size: 1.05rem;
-          font-weight: 700;
-          margin-bottom: 0.5rem;
-          color: #1a1a1a;
-        }
-
-        .fl-feature-card p {
-          font-size: 0.9rem;
-          color: #888;
-          line-height: 1.6;
-        }
-
-        .fl-cta-section {
-          text-align: center;
-          padding: 6rem 2rem;
-          max-width: 700px;
-          margin: 0 auto;
-        }
-
-        .fl-cta-section h2 {
-          font-size: clamp(2rem, 4vw, 3rem);
-          font-weight: 900;
-          letter-spacing: -0.04em;
-          line-height: 1.1;
-          margin-bottom: 1rem;
-        }
-
-        .fl-cta-section p {
-          font-family: 'Newsreader', Georgia, serif;
-          font-size: 1.15rem;
-          color: #888;
-          line-height: 1.6;
-          margin-bottom: 2.5rem;
-        }
-
-        .fl-cta-buttons {
-          display: flex;
-          gap: 1rem;
-          justify-content: center;
-          flex-wrap: wrap;
-        }
-
-        .fl-footer {
-          padding: 3rem 2rem;
-          border-top: 1px solid #eee;
-          max-width: 1200px;
-          margin: 0 auto;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          flex-wrap: wrap;
-          gap: 1rem;
-        }
-
-        .fl-footer-copy {
-          font-size: 0.82rem;
-          color: #aaa;
-        }
-
-        .fl-footer-links {
-          display: flex;
-          gap: 1.5rem;
-        }
-
-        .fl-footer-links a {
-          font-size: 0.82rem;
-          color: #aaa;
-          text-decoration: none;
-          transition: color 0.2s;
-        }
-
-        .fl-footer-links a:hover { color: #1a1a1a; }
-
-        .fl-divider-accent {
-          width: 48px;
-          height: 3px;
-          background: #E8590C;
-          border-radius: 2px;
-          margin-bottom: 2rem;
-        }
-
-        @media (max-width: 768px) {
-          .fl-nav { padding: 1rem 1.25rem; }
-          .fl-nav-links { gap: 1rem; }
-          .fl-nav-links a:not(:last-child) { display: none; }
-          .fl-hero { padding: 7rem 1.25rem 3rem; }
-          .fl-section { padding: 4rem 1.25rem; }
-          .fl-stats-row { gap: 2.5rem; }
-          .fl-steps-row { flex-direction: column; gap: 2rem; }
-          .fl-search-bar { flex-direction: column; border-radius: 16px; }
-          .fl-search-bar input { padding: 1rem 1.25rem; }
-          .fl-search-bar button { padding: 1rem; border-radius: 0; }
-        }
-      `}</style>
-
       <div className="fl-grain" />
 
-      {/* Nav */}
+      {/* ===== NAV ===== */}
       <nav className="fl-nav">
-        <a href="/" className="fl-nav-logo">Fee<span>Lens</span></a>
+        <a href="/" className="fl-nav-logo">
+          Fee<span>Lens</span>
+        </a>
         <div className="fl-nav-links">
           <a href="/explore">Explore</a>
-          <a href="/providers">Agencies</a>
-          <a href="/login" className="fl-btn-primary">Sign in</a>
+          <a href="/industries">Industries</a>
+          <a href="/about">About</a>
+          <a href="/login" className="fl-btn-primary">
+            Sign in
+          </a>
         </div>
       </nav>
 
-      {/* Hero */}
+      {/* ===== HERO ===== */}
       <section className="fl-hero">
         <div className="fl-hero-bg" />
-        <div style={{
-          position: 'relative',
-          zIndex: 1,
-          opacity: heroLoaded ? 1 : 0,
-          transform: heroLoaded ? 'translateY(0)' : 'translateY(30px)',
-          transition: 'all 0.9s cubic-bezier(0.22, 1, 0.36, 1)',
-        }}>
-          <div className="fl-hero-tag">
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#E8590C', display: 'inline-block' }} />
-            Now live across Australia
+        <div
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            opacity: heroLoaded ? 1 : 0,
+            transform: heroLoaded ? 'translateY(0)' : 'translateY(30px)',
+            transition: 'all 0.9s cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+        >
+          <div className="fl-hero-badge">
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: 'var(--accent)',
+                display: 'inline-block',
+              }}
+            />
+            Covering 10 industries across Australia
           </div>
 
           <h1>
-            Know what you&rsquo;re<br />
-            actually paying.
+            Know what you&rsquo;re
+            <br />
+            <span style={{ color: 'var(--accent)' }}>actually paying.</span>
           </h1>
 
           <p className="fl-hero-sub">
-            Australians share real property management fees so you can compare, 
-            negotiate, and stop getting blindsided by hidden charges.
+            Australians share real fees — the good, the bad, and the hidden — so
+            you can compare, negotiate, and get a fair deal in any industry.
           </p>
 
-          <div className="fl-hero-rotating">
-            Surprise fee of the day: <RotatingFee />
-          </div>
-
-          <div className="fl-search-bar">
-            <input
-              type="text"
-              placeholder="Search by suburb, postcode, or agency name..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            <button type="button">Search</button>
-          </div>
+          <RotatingFee />
+          <TabbedSearch />
         </div>
       </section>
 
-      {/* Stats */}
+      {/* ===== INDUSTRY GRID ===== */}
       <section className="fl-section">
-        <div className="fl-stats-row">
-          <StatCard number="2,400+" label="Fee reports" delay={200} />
-          <StatCard number="850+" label="Agencies listed" delay={400} />
-          <StatCard number="23%" label="Avg hidden fee gap" delay={600} />
-          <StatCard number="8" label="States & territories" delay={800} />
+        <div className="fl-section-label">Browse by industry</div>
+        <h2 className="fl-section-title">
+          Transparency across every service you pay for
+        </h2>
+
+        <div className="fl-industry-grid">
+          {INDUSTRIES_MAIN.map((ind, i) => (
+            <AnimatedBlock key={ind.icon} delay={i * 80}>
+              <div className="fl-industry-card">
+                <div className="fl-industry-icon">{ind.icon}</div>
+                <div
+                  className="fl-industry-name"
+                  style={{ whiteSpace: 'pre-line' }}
+                >
+                  {ind.name}
+                </div>
+                <div className="fl-industry-count">{ind.count}</div>
+              </div>
+            </AnimatedBlock>
+          ))}
+        </div>
+
+        <div className="fl-industry-grid-sm">
+          {INDUSTRIES_SECONDARY.map((ind, i) => (
+            <AnimatedBlock key={ind.icon} delay={200 + i * 60}>
+              <div className="fl-industry-card-sm">
+                <span className="fl-industry-icon-sm">{ind.icon}</span>
+                <span className="fl-industry-name-sm">{ind.name}</span>
+              </div>
+            </AnimatedBlock>
+          ))}
         </div>
       </section>
 
-      {/* How it works */}
+      {/* ===== RECENT REPORTS ===== */}
+      <section className="fl-section">
+        <div className="fl-section-label">Live from the community</div>
+        <h2 className="fl-section-title">Recent fee reports</h2>
+        <p className="fl-section-desc">
+          Real submissions from real Australians. Names and identifying details
+          are always hidden.
+        </p>
+
+        <div className="fl-reports-grid">
+          {SAMPLE_REPORTS.map((report, i) => (
+            <AnimatedBlock key={report.title} delay={i * 80}>
+              <ReportCard report={report} />
+            </AnimatedBlock>
+          ))}
+        </div>
+      </section>
+
+      {/* ===== STATS ===== */}
+      <section className="fl-section">
+        <div className="fl-stats-inner">
+          {STATS.map((s, i) => (
+            <AnimatedBlock key={s.label} delay={i * 100}>
+              <div className="fl-stat">
+                <div className="fl-stat-num">{s.number}</div>
+                <div className="fl-stat-label">{s.label}</div>
+              </div>
+            </AnimatedBlock>
+          ))}
+        </div>
+      </section>
+
+      {/* ===== HOW IT WORKS ===== */}
       <section className="fl-section">
         <div className="fl-section-label">How it works</div>
         <h2 className="fl-section-title">Three steps to transparency</h2>
@@ -623,90 +452,63 @@ export default function HomePage() {
           No sign-up fees, no data selling. Just real numbers from real people.
         </p>
         <div className="fl-steps-row">
-          <HowItWorksStep
-            step="1"
-            title="Find your agency"
-            desc="Search by suburb, postcode, or agency name. We cover every state and territory."
-            delay={200}
-          />
-          <HowItWorksStep
-            step="2"
-            title="Share what you paid"
-            desc="Anonymously submit your management fees, hidden charges, and quote-vs-reality breakdown."
-            delay={400}
-          />
-          <HowItWorksStep
-            step="3"
-            title="Compare & negotiate"
-            desc="See how your agency stacks up. Use real data to push back on unfair fees."
-            delay={600}
-          />
+          {STEPS.map((step, i) => (
+            <AnimatedBlock key={step.step} delay={i * 120}>
+              <div className="fl-step">
+                <div className="fl-step-num">{step.step}</div>
+                <h3>{step.title}</h3>
+                <p>{step.desc}</p>
+              </div>
+            </AnimatedBlock>
+          ))}
         </div>
       </section>
 
-      {/* Features */}
+      {/* ===== FEATURES ===== */}
       <section className="fl-section">
         <div className="fl-divider-accent" />
         <div className="fl-section-label">Why FeeLens</div>
-        <h2 className="fl-section-title">Built for renters & owners who want a fair go</h2>
+        <h2 className="fl-section-title">
+          Built for Australians who want a fair go
+        </h2>
         <p className="fl-section-desc">
-          We believe fee transparency is a right, not a privilege.
+          Fee transparency is a right, not a privilege.
         </p>
-        <div className="fl-card-grid">
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">🔒</div>
-            <h3>Anonymous by design</h3>
-            <p>Your identity is never revealed. We use pseudonymous IDs and purge IP data after 30 days.</p>
-          </div>
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">📊</div>
-            <h3>Quote vs Reality</h3>
-            <p>Compare what you were quoted against what you actually paid. Expose the gap.</p>
-          </div>
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">🛡️</div>
-            <h3>Verified & moderated</h3>
-            <p>Every submission goes through risk checks and community moderation. No fake reviews.</p>
-          </div>
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">🗺️</div>
-            <h3>Search by location</h3>
-            <p>Find fees by suburb or postcode. Know the going rate in your area before you sign.</p>
-          </div>
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">⚖️</div>
-            <h3>Fair dispute process</h3>
-            <p>Agencies can respond to submissions. Our team reviews disputes within 48 hours.</p>
-          </div>
-          <div className="fl-feature-card">
-            <div className="fl-feature-icon">🇦🇺</div>
-            <h3>Made for Australia</h3>
-            <p>Covers all states and territories. GST-aware. Built around Australian property management norms.</p>
-          </div>
+        <div className="fl-feature-grid">
+          {FEATURES.map((f, i) => (
+            <AnimatedBlock key={f.title} delay={i * 80}>
+              <div className="fl-feature-card">
+                <div className="fl-feature-icon">{f.icon}</div>
+                <h3>{f.title}</h3>
+                <p>{f.desc}</p>
+              </div>
+            </AnimatedBlock>
+          ))}
         </div>
       </section>
 
-      {/* CTA */}
+      {/* ===== CTA ===== */}
       <section className="fl-cta-section">
         <h2>
-          Had a surprise fee?<br />
-          <span style={{ color: '#E8590C' }}>Share it.</span>
+          Had a surprise fee?
+          <br />
+          <span style={{ color: 'var(--accent)' }}>Share it.</span>
         </h2>
         <p>
           Every submission helps thousands of Australians make better decisions.
           It takes 2 minutes and it&rsquo;s completely anonymous.
         </p>
-        <div className="fl-cta-buttons">
+        <div className="fl-cta-btns">
           <a href="/submit" className="fl-btn-primary">
             Submit a fee report →
           </a>
           <a href="/explore" className="fl-btn-outline">
-            Browse agencies
+            Browse industries
           </a>
         </div>
       </section>
 
-      {/* Footer */}
+      {/* ===== FOOTER ===== */}
       <footer className="fl-footer">
         <div className="fl-footer-copy">
           © 2026 FeeLens · ABN pending · Made in Sydney

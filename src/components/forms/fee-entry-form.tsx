@@ -1,9 +1,26 @@
+// src/components/forms/fee-entry-form.tsx
+// ==========================================
+// Legacy real_estate fee entry form (Client Component)
+//
+// Write path: submitEntry() → Edge submit-entry → RPC submit_fee_entry
+// Error path: classifyError() → ApiErrorDisplay (error_code primary, string fallback)
+// Success: router.replace('/entries?mine=true&created=1')
+//
+// Auth-4b:
+//   - ApiError + ApiErrorDisplay (replaces raw string error)
+//   - Frontend validation (required + number range) before API call
+//   - Anti-double-submit: disabled button + ref guard
+//   - Form state cleared before redirect (prevents back-button re-submit)
+// ==========================================
+
 'use client'
 
-import { useState, type FormEvent, type ChangeEvent } from 'react'
+import { useState, useRef, type FormEvent, type ChangeEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { submitEntry, type SubmitEntryParams } from '@/lib/supabase/functions'
 import { getCurrentUser } from '@/lib/supabase/client.browser'
+import { classifyError, type ApiError } from '@/lib/errors'
+import { ApiErrorDisplay } from '@/components/ui/api-error-display'
 
 interface FeeEntryFormProps {
   providerId: string
@@ -12,11 +29,12 @@ interface FeeEntryFormProps {
 
 export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
   const router = useRouter()
+  const submitGuard = useRef(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string>('')
+  const [apiError, setApiError] = useState<ApiError | null>(null)
   const [success, setSuccess] = useState(false)
 
-  // 表单字段状态
+  // ── Form fields ────────────────────────────────────────────────────────
   const [propertyType, setPropertyType] = useState<'apartment' | 'house' | 'commercial'>('apartment')
   const [managementFeePct, setManagementFeePct] = useState<string>('8.5')
   const [managementFeeInclGst, setManagementFeeInclGst] = useState(true)
@@ -29,15 +47,14 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
   const [initialQuoteTotal, setInitialQuoteTotal] = useState<string>('')
   const [finalTotalPaid, setFinalTotalPaid] = useState<string>('')
 
-  // 常见隐藏费用选项
   const hiddenFeeOptions = [
-    { value: 'annual_report_fee', label: '年度报告费' },
-    { value: 'maintenance_markup', label: '维修加成' },
-    { value: 'card_surcharge', label: '刷卡附加费' },
-    { value: 'admin_fee', label: '行政管理费' },
-    { value: 'late_payment_fee', label: '逾期付款费' },
-    { value: 'early_termination_fee', label: '提前终止费' },
-    { value: 'inspection_report_fee', label: '巡检报告费' },
+    { value: 'annual_report_fee', label: 'Annual report fee' },
+    { value: 'maintenance_markup', label: 'Maintenance markup' },
+    { value: 'card_surcharge', label: 'Card surcharge' },
+    { value: 'admin_fee', label: 'Admin fee' },
+    { value: 'late_payment_fee', label: 'Late payment fee' },
+    { value: 'early_termination_fee', label: 'Early termination fee' },
+    { value: 'inspection_report_fee', label: 'Inspection report fee' },
   ]
 
   const toggleHiddenItem = (item: string) => {
@@ -48,22 +65,74 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
     )
   }
 
+  // ── Frontend validation (two-stage: frontend first, then backend) ──────
+
+  function validateForm(): string | null {
+    const feePct = parseFloat(managementFeePct)
+    if (!managementFeePct || isNaN(feePct)) {
+      return 'Management fee percentage is required.'
+    }
+    if (feePct <= 0 || feePct > 100) {
+      return 'Management fee must be between 0 and 100%.'
+    }
+    if (lettingFeeWeeks) {
+      const v = parseFloat(lettingFeeWeeks)
+      if (isNaN(v) || v < 0) return 'Letting fee weeks must be 0 or greater.'
+    }
+    if (inspectionFeeFixed) {
+      const v = parseFloat(inspectionFeeFixed)
+      if (isNaN(v) || v < 0) return 'Inspection fee must be 0 or greater.'
+    }
+    if (repairMarginPct) {
+      const v = parseFloat(repairMarginPct)
+      if (isNaN(v) || v < 0 || v > 100) return 'Repair margin must be between 0 and 100%.'
+    }
+    if (breakFeeAmount) {
+      const v = parseFloat(breakFeeAmount)
+      if (isNaN(v) || v < 0) return 'Break fee must be 0 or greater.'
+    }
+    if (initialQuoteTotal) {
+      const v = parseFloat(initialQuoteTotal)
+      if (isNaN(v) || v < 0) return 'Initial quote total must be 0 or greater.'
+    }
+    if (finalTotalPaid) {
+      const v = parseFloat(finalTotalPaid)
+      if (isNaN(v) || v < 0) return 'Final total paid must be 0 or greater.'
+    }
+    return null
+  }
+
+  // ── Submit ─────────────────────────────────────────────────────────────
+
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    setError('')
-    setSuccess(false)
+
+    // Anti-double-submit
+    if (submitGuard.current || isSubmitting) return
+    submitGuard.current = true
+    setApiError(null)
     setIsSubmitting(true)
 
+    // 1. Frontend validation
+    const validationMsg = validateForm()
+    if (validationMsg) {
+      setApiError({ code: 'VALIDATION_FAILED', message: validationMsg })
+      setIsSubmitting(false)
+      submitGuard.current = false
+      return
+    }
+
     try {
-      // 1. 检查是否登录
+      // 2. Auth check
       const user = await getCurrentUser()
       if (!user) {
-        setError('请先登录')
+        setApiError(classifyError({ error: 'not authenticated' }))
         setIsSubmitting(false)
+        submitGuard.current = false
         return
       }
 
-      // 2. 构造提交参数
+      // 3. Build params
       const params: SubmitEntryParams = {
         provider_id: providerId,
         property_type: propertyType,
@@ -72,105 +141,83 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
         hidden_items: hiddenItems,
         quote_transparency_score: quoteTransparencyScore,
       }
+      if (lettingFeeWeeks) params.letting_fee_weeks = parseFloat(lettingFeeWeeks)
+      if (inspectionFeeFixed) params.inspection_fee_fixed = parseFloat(inspectionFeeFixed)
+      if (repairMarginPct) params.repair_margin_pct = parseFloat(repairMarginPct)
+      if (breakFeeAmount) params.break_fee_amount = parseFloat(breakFeeAmount)
+      if (initialQuoteTotal) params.initial_quote_total = parseFloat(initialQuoteTotal)
+      if (finalTotalPaid) params.final_total_paid = parseFloat(finalTotalPaid)
 
-      // 添加可选字段
-      if (lettingFeeWeeks) {
-        params.letting_fee_weeks = parseFloat(lettingFeeWeeks)
-      }
-      if (inspectionFeeFixed) {
-        params.inspection_fee_fixed = parseFloat(inspectionFeeFixed)
-      }
-      if (repairMarginPct) {
-        params.repair_margin_pct = parseFloat(repairMarginPct)
-      }
-      if (breakFeeAmount) {
-        params.break_fee_amount = parseFloat(breakFeeAmount)
-      }
-      if (initialQuoteTotal) {
-        params.initial_quote_total = parseFloat(initialQuoteTotal)
-      }
-      if (finalTotalPaid) {
-        params.final_total_paid = parseFloat(finalTotalPaid)
-      }
-
-      // 3. 调用封装的函数（不直接 insert）
+      // 4. Single write entry point: Edge Function
       const result = await submitEntry(params)
 
       if (!result.success) {
-        setError(result.error || '提交失败')
+        setApiError(classifyError(result))
         setIsSubmitting(false)
+        submitGuard.current = false
         return
       }
 
-      // 4. 成功处理
+      // 5. Success — clear state, then redirect
+      //    Success confirmation = API returned success, NOT list page visibility
       setSuccess(true)
-      
-      // 显示提示信息
-      if (result.requires_moderation) {
-        alert('提交成功！您的条目需要人工审核，审核通过后将公开显示。')
-      } else {
-        alert('提交成功！感谢您的贡献。')
-      }
-
-      // 3 秒后跳转回商家详情页
-      setTimeout(() => {
-        router.push(`/providers/${providerId}`)
-      }, 3000)
+      // Clear form state so back-button doesn't show stale data
+      setManagementFeePct('')
+      setHiddenItems([])
+      setInitialQuoteTotal('')
+      setFinalTotalPaid('')
+      router.replace('/entries?mine=true&created=1')
 
     } catch (err) {
-      console.error('提交时发生错误:', err)
-      setError('网络错误，请检查连接后重试')
+      console.error('Submit error:', err)
+      setApiError(classifyError({ error: 'network error' }))
       setIsSubmitting(false)
+      submitGuard.current = false
     }
   }
 
+  // ── Success UI (brief flash before redirect completes) ─────────────────
+
   if (success) {
     return (
-      <div className="max-w-2xl mx-auto p-6 bg-green-50 border border-green-200 rounded-lg">
-        <h2 className="text-2xl font-bold text-green-800 mb-4">✓ 提交成功</h2>
-        <p className="text-green-700">
-          感谢您的贡献！正在跳转回商家页面...
-        </p>
+      <div className="max-w-2xl mx-auto p-6">
+        <div className="p-6 bg-green-50 border border-green-200 rounded-lg">
+          <h2 className="text-xl font-bold text-green-800 mb-2">✓ Entry submitted successfully</h2>
+          <p className="text-green-700">Redirecting to your entries...</p>
+        </div>
       </div>
     )
   }
 
+  // ── Form UI ────────────────────────────────────────────────────────────
+
   return (
     <div className="max-w-2xl mx-auto p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
-      <h2 className="text-2xl font-bold mb-2">分享费用经历</h2>
+      <h2 className="text-2xl font-bold mb-2">Share Fee Experience</h2>
       <p className="text-gray-600 mb-6">
-        为 <span className="font-semibold">{providerName}</span> 提交费用信息
+        for <span className="font-semibold">{providerName}</span>
       </p>
 
-      {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded text-red-700">
-          {error}
-        </div>
-      )}
+      <ApiErrorDisplay error={apiError} onDismiss={() => setApiError(null)} className="mb-4" />
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        {/* 物业类型 */}
+        {/* Property type */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            物业类型 *
-          </label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Property type *</label>
           <select
             value={propertyType}
             onChange={(e: ChangeEvent<HTMLSelectElement>) => setPropertyType(e.target.value as 'apartment' | 'house' | 'commercial')}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            required
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
           >
-            <option value="apartment">公寓</option>
-            <option value="house">独立屋</option>
-            <option value="commercial">商业物业</option>
+            <option value="apartment">Apartment</option>
+            <option value="house">House</option>
+            <option value="commercial">Commercial</option>
           </select>
         </div>
 
-        {/* 管理费百分比 */}
+        {/* Management fee */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            管理费百分比 (%) *
-          </label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Management fee (%) *</label>
           <input
             type="number"
             step="0.1"
@@ -178,126 +225,85 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
             max="100"
             value={managementFeePct}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setManagementFeePct(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="例如：8.5"
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
             required
           />
-        </div>
-
-        {/* 是否含 GST */}
-        <div className="flex items-center">
-          <input
-            type="checkbox"
-            id="incl_gst"
-            checked={managementFeeInclGst}
-            onChange={(e) => setManagementFeeInclGst(e.target.checked)}
-            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-          />
-          <label htmlFor="incl_gst" className="ml-2 text-sm text-gray-700">
-            管理费含 GST
+          <label className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              checked={managementFeeInclGst}
+              onChange={(e) => setManagementFeeInclGst(e.target.checked)}
+              className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+            />
+            <span className="text-sm text-gray-600">Includes GST</span>
           </label>
         </div>
 
-        {/* 招租费（可选） */}
+        {/* Optional fees grid */}
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Letting fee (weeks)</label>
+            <input type="number" step="0.5" min="0" value={lettingFeeWeeks}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setLettingFeeWeeks(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Inspection fee (fixed $)</label>
+            <input type="number" step="0.01" min="0" value={inspectionFeeFixed}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setInspectionFeeFixed(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Repair margin (%)</label>
+            <input type="number" step="0.1" min="0" max="100" value={repairMarginPct}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setRepairMarginPct(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Break fee ($)</label>
+            <input type="number" step="0.01" min="0" value={breakFeeAmount}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setBreakFeeAmount(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+        </div>
+
+        {/* Hidden fees */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            招租费（周租金倍数）
-          </label>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="10"
-            value={lettingFeeWeeks}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setLettingFeeWeeks(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="例如：1.0（1周租金）"
-          />
-        </div>
-
-        {/* 巡检费（可选） */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            例行巡检费（固定金额 AUD）
-          </label>
-          <input
-            type="number"
-            step="1"
-            min="0"
-            value={inspectionFeeFixed}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setInspectionFeeFixed(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="例如：80"
-          />
-        </div>
-
-        {/* 维修加成（可选） */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            维修加成百分比 (%)
-          </label>
-          <input
-            type="number"
-            step="1"
-            min="0"
-            max="100"
-            value={repairMarginPct}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setRepairMarginPct(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="例如：15"
-          />
-        </div>
-
-        {/* 解约费（可选） */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            提前解约费（AUD）
-          </label>
-          <input
-            type="number"
-            step="1"
-            min="0"
-            value={breakFeeAmount}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setBreakFeeAmount(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="例如：500"
-          />
-        </div>
-
-        {/* 隐藏费用（多选） */}
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            遇到的隐藏费用（可多选）
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            {hiddenFeeOptions.map((option) => (
-              <label key={option.value} className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  checked={hiddenItems.includes(option.value)}
-                  onChange={() => toggleHiddenItem(option.value)}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <span className="text-sm text-gray-700">{option.label}</span>
-              </label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">Hidden or undisclosed fees</label>
+          <div className="flex flex-wrap gap-2">
+            {hiddenFeeOptions.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => toggleHiddenItem(value)}
+                className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${
+                  hiddenItems.includes(value)
+                    ? 'bg-orange-100 border-orange-300 text-orange-800'
+                    : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
             ))}
           </div>
         </div>
 
-        {/* 报价透明度评分 */}
+        {/* Transparency score */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            报价透明度评分（1-5 分）
-          </label>
-          <div className="flex space-x-2">
+          <label className="block text-sm font-medium text-gray-700 mb-2">Quote transparency score *</label>
+          <div className="flex gap-2">
             {[1, 2, 3, 4, 5].map((score) => (
               <button
                 key={score}
                 type="button"
                 onClick={() => setQuoteTransparencyScore(score)}
-                className={`px-4 py-2 rounded-md font-semibold ${
+                className={`w-10 h-10 rounded-lg font-medium transition-colors ${
                   quoteTransparencyScore === score
-                    ? 'bg-blue-600 text-white'
+                    ? 'bg-orange-600 text-white'
                     : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                 }`}
               >
@@ -305,47 +311,33 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
               </button>
             ))}
           </div>
-          <p className="mt-1 text-xs text-gray-500">
-            1=完全不透明，5=非常透明
-          </p>
+          <p className="mt-1 text-xs text-gray-500">1 = not transparent, 5 = very transparent</p>
         </div>
 
-        {/* 费用对比（可选） */}
+        {/* Fee comparison (optional) */}
         <div className="border-t pt-4">
-          <h3 className="font-semibold text-gray-800 mb-3">费用对比（可选）</h3>
+          <h3 className="font-semibold text-gray-800 mb-3">Fee comparison (optional)</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                初始报价总额（AUD）
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={initialQuoteTotal}
+              <label className="block text-sm font-medium text-gray-700 mb-2">Initial quote total (AUD)</label>
+              <input type="number" step="0.01" min="0" value={initialQuoteTotal}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setInitialQuoteTotal(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
                 placeholder="1000.00"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                实际支付总额（AUD）
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={finalTotalPaid}
+              <label className="block text-sm font-medium text-gray-700 mb-2">Final total paid (AUD)</label>
+              <input type="number" step="0.01" min="0" value={finalTotalPaid}
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setFinalTotalPaid(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500"
                 placeholder="1150.00"
               />
             </div>
           </div>
         </div>
 
-        {/* 提交按钮 */}
+        {/* Submit */}
         <div className="flex justify-end space-x-4 pt-4 border-t">
           <button
             type="button"
@@ -353,14 +345,14 @@ export function FeeEntryForm({ providerId, providerName }: FeeEntryFormProps) {
             className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
             disabled={isSubmitting}
           >
-            取消
+            Cancel
           </button>
           <button
             type="submit"
             disabled={isSubmitting}
-            className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            className="px-6 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
-            {isSubmitting ? '提交中...' : '提交'}
+            {isSubmitting ? 'Submitting...' : 'Submit'}
           </button>
         </div>
       </form>

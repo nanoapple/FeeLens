@@ -1,1 +1,5 @@
- 
+ [functions.submit-entry]
+verify_jwt = false
+
+[functions.create-entry-v2]
+verify_jwt = false

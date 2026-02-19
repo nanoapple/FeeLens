@@ -1,204 +1,243 @@
-// @ts-nocheck
 // ==========================================
-// Edge Function: submit-entry
-// 职责：JWT 验证 + 输入校验 + 调用 RPC
+// Edge Function: submit-entry (patched for local ES256 auth)
+//
+// Purpose:
+// - Accept simplified "submit" payloads (non-legal industries)
+// - Validate input (UX layer)
+// - Authenticate via /auth/v1/user (works with ES256)
+// - Call DB RPC (single write path)
+//
+// NOTE:
+// This implementation targets the same DB RPC "create_fee_entry_v2" with
+// industry_key defaulting to 'real_estate'. If your repo uses a different
+// RPC for submit-entry, rename the RPC accordingly.
+//
+// Expected config.toml (local):
+//   [functions.submit-entry]
+//   verify_jwt = false
 // ==========================================
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
 import { z } from 'https://deno.land/x/zod@v3.22.4/mod.ts'
 
-type SubmitEntryInput = {
-  provider_id: string
-  property_type: 'apartment' | 'house' | 'commercial'
-  management_fee_pct: number
-  management_fee_incl_gst: boolean
-  letting_fee_weeks?: number | null
-  inspection_fee_fixed?: number | null
-  repair_margin_pct?: number | null
-  break_fee_amount?: number | null
-  hidden_items: string[]
-  quote_transparency_score?: number | null
-  initial_quote_total?: number | null
-  final_total_paid?: number | null
-}
-
-const SubmitEntrySchema = z.object({
-  provider_id: z.string().uuid('无效的商家 ID'),
-  property_type: z.enum(['apartment', 'house', 'commercial'], {
-    errorMap: () => ({ message: '物业类型必须是 apartment、house 或 commercial' })
-  }),
-  management_fee_pct: z.number()
-    .min(0, '管理费百分比不能小于 0')
-    .max(100, '管理费百分比不能大于 100'),
-  management_fee_incl_gst: z.boolean(),
-  letting_fee_weeks: z.number().min(0).max(10).optional(),
-  inspection_fee_fixed: z.number().min(0).optional(),
-  repair_margin_pct: z.number().min(0).max(100).optional(),
-  break_fee_amount: z.number().min(0).optional(),
-  hidden_items: z.array(z.string()).default([]),
-  quote_transparency_score: z.number().min(1).max(5).optional(),
-  initial_quote_total: z.number().positive().optional(),
-  final_total_paid: z.number().positive().optional(),
-})
-
-// ==========================================
-// CORS 头（允许前端调用）
-// ==========================================
-const corsHeaders = {
+const corsHeaders: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// ==========================================
-// 主函数
-// ==========================================
+type ApiErrorPayload = {
+  ok: false
+  error_code: string
+  message: string
+  details?: unknown
+}
+
+type OkPayload<T> = {
+  ok: true
+  data: T
+}
+
+function json<T>(payload: T, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
+
+function getBearerToken(req: Request): string | null {
+  const h = req.headers.get('authorization') ?? req.headers.get('Authorization')
+  if (!h) return null
+  const m = h.match(/^Bearer\s+(.+)$/i)
+  return m?.[1] ?? null
+}
+
+async function requireUser(req: Request): Promise<
+  | { ok: true; user: { id: string; email?: string | null }; token: string }
+  | { ok: false; res: Response }
+> {
+  const token = getBearerToken(req)
+  if (!token) {
+    return {
+      ok: false,
+      res: json<ApiErrorPayload>(
+        { ok: false, error_code: 'AUTH_REQUIRED', message: 'Not signed in.' },
+        401
+      ),
+    }
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+  if (!supabaseUrl || !anonKey) {
+    return {
+      ok: false,
+      res: json<ApiErrorPayload>(
+        {
+          ok: false,
+          error_code: 'SERVER_MISCONFIG',
+          message: 'Missing SUPABASE_URL or SUPABASE_ANON_KEY.',
+        },
+        500
+      ),
+    }
+  }
+
+  const r = await fetch(`${supabaseUrl}/auth/v1/user`, {
+    headers: {
+      apikey: anonKey,
+      Authorization: `Bearer ${token}`,
+    },
+  })
+
+  if (!r.ok) {
+    return {
+      ok: false,
+      res: json<ApiErrorPayload>(
+        { ok: false, error_code: 'AUTH_INVALID', message: 'Session expired or invalid.' },
+        401
+      ),
+    }
+  }
+
+  const user = await r.json()
+  return { ok: true, user, token }
+}
+
+function mapRpcError(message: string): { code: string; message: string } {
+  const m = message.toLowerCase()
+  if (m.includes('not authenticated') || m.includes('unauthorized')) {
+    return { code: 'AUTH_REQUIRED', message: 'Please sign in to submit.' }
+  }
+  if (m.includes('provider not found')) {
+    return { code: 'PROVIDER_NOT_FOUND', message: 'Provider not found.' }
+  }
+  if (m.includes('not yet approved') || m.includes('not approved')) {
+    return { code: 'PROVIDER_NOT_APPROVED', message: 'Provider is pending verification.' }
+  }
+  if (m.includes('24小时') || m.includes('rate limit') || m.includes('too many')) {
+    return {
+      code: 'RATE_LIMITED',
+      message: 'You have reached the submission limit. Please try again later.',
+    }
+  }
+  if (m.includes('validation')) {
+    return { code: 'VALIDATION_FAILED', message: 'Validation failed.' }
+  }
+  return { code: 'UNKNOWN', message }
+}
+
+// Minimal submit payload (real_estate example). Allow passthrough for future expansion.
+const SubmitEntrySchema = z
+  .object({
+    provider_id: z.string().uuid('Invalid provider ID'),
+    // Industry is fixed for this endpoint by default.
+    industry_key: z.string().optional().default('real_estate'),
+
+    // Real-estate sample fields
+    property_type: z.string().min(1).optional(),
+    management_fee_pct: z.number().min(0).max(100).optional(),
+    management_fee_incl_gst: z.boolean().optional(),
+
+    // Common
+    hidden_items: z.array(z.string()).optional().default([]),
+    quote_transparency_score: z.number().int().min(1).max(5).optional(),
+    initial_quote_total: z.number().positive().optional(),
+    final_total_paid: z.number().positive().optional(),
+    evidence_object_key: z.string().optional(),
+
+    // Optional: allow client to pass a context object
+    context: z.record(z.unknown()).optional().default({}),
+  })
+  .passthrough()
+
 serve(async (req: Request) => {
-  // 处理 CORS preflight
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  if (req.method !== 'POST') {
+    return json<ApiErrorPayload>(
+      { ok: false, error_code: 'METHOD_NOT_ALLOWED', message: 'Use POST.' },
+      405
+    )
   }
 
+  const auth = await requireUser(req)
+  if (!auth.ok) return auth.res
+
+  let body: unknown
   try {
-    // ==========================================
-    // 1. JWT 验证
-    // ==========================================
-    const authHeader = req.headers.get('Authorization')
-    if (!authHeader) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Unauthorized: 缺少认证信息' }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
-    }
+    body = await req.json()
+  } catch {
+    return json<ApiErrorPayload>({ ok: false, error_code: 'BAD_JSON', message: 'Invalid JSON body.' }, 400)
+  }
 
-    // 创建 Supabase 客户端（使用 anon key + 用户的 JWT）
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+  const parsed = SubmitEntrySchema.safeParse(body)
+  if (!parsed.success) {
+    return json<ApiErrorPayload>(
       {
-        global: {
-          headers: { Authorization: authHeader }
-        }
-      }
-    )
-
-    // 验证 JWT 并获取用户信息
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      console.error('JWT 验证失败:', authError)
-      return new Response(
-        JSON.stringify({ success: false, error: 'Unauthorized: 无效的认证令牌' }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
-    }
-
-    console.log(`用户 ${user.id} 开始提交费用条目`)
-
-    // ==========================================
-    // 2. 输入校验（Zod）
-    // ==========================================
-    const body = await req.json()
-    const validation = SubmitEntrySchema.safeParse(body)
-
-    if (!validation.success) {
-      const errors = validation.error.errors.map((e: any) => `${e.path.join('.')}: ${e.message}`)
-      console.error('输入校验失败:', errors)
-      
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: '输入数据不符合要求',
-          details: errors
-        }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
-    }
-
-    const data = validation.data as SubmitEntryInput
-
-    // 调用 Postgres RPC（业务逻辑在数据库）
-    console.log(`调用 RPC: submit_fee_entry for provider ${data.provider_id}`)
-
-    const { data: rpcResult, error: rpcError } = await supabase.rpc('submit_fee_entry', {
-      p_provider_id: data.provider_id,
-      p_property_type: data.property_type,
-      p_management_fee_pct: data.management_fee_pct,
-      p_management_fee_incl_gst: data.management_fee_incl_gst,
-      p_letting_fee_weeks: data.letting_fee_weeks ?? null,
-      p_inspection_fee_fixed: data.inspection_fee_fixed ?? null,
-      p_repair_margin_pct: data.repair_margin_pct ?? null,
-      p_break_fee_amount: data.break_fee_amount ?? null,
-      p_hidden_items: data.hidden_items,
-      p_quote_transparency_score: data.quote_transparency_score ?? null,
-      p_initial_quote_total: data.initial_quote_total ?? null,
-      p_final_total_paid: data.final_total_paid ?? null,
-    })
-
-    if (rpcError) {
-      console.error('RPC 调用失败:', rpcError)
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Internal server error: 提交处理失败'
-        }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
-    }
-
-    // ==========================================
-    // 5. 检查 RPC 返回的业务错误
-    // ==========================================
-    if (rpcResult && typeof rpcResult === 'object' && 'error' in rpcResult) {
-      console.warn('业务逻辑错误:', rpcResult.error)
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: rpcResult.error
-        }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        }
-      )
-    }
-
-    // ==========================================
-    // 6. 返回成功
-    // ==========================================
-    console.log(`提交成功: entry_id=${rpcResult.entry_id}, visibility=${rpcResult.visibility}`)
-
-    return new Response(
-      JSON.stringify(rpcResult),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
-    )
-
-  } catch (error) {
-    console.error('Edge Function 异常:', error)
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: 'Internal server error: ' + (error instanceof Error ? error.message : '未知错误')
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      }
+        ok: false,
+        error_code: 'VALIDATION_FAILED',
+        message: 'Validation failed.',
+        details: parsed.error.errors.map((e) => ({ path: e.path.join('.'), message: e.message })),
+      },
+      400
     )
   }
+
+  // ✅ FIX: define payload/industryKey/context in-scope
+  const payload = parsed.data
+  const industryKey = payload.industry_key ?? 'real_estate'
+
+  // Build context for RPC-side schema validation. Start from payload.context, then add known fields.
+  const context: Record<string, unknown> = {
+    ...(payload.context ?? {}),
+    property_type: payload.property_type ?? null,
+    management_fee_pct: payload.management_fee_pct ?? null,
+    management_fee_incl_gst: payload.management_fee_incl_gst ?? null,
+    initial_quote_total: payload.initial_quote_total ?? null,
+    final_total_paid: payload.final_total_paid ?? null,
+    evidence_object_key: payload.evidence_object_key ?? null,
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+  const supabase = createClient(supabaseUrl, anonKey, {
+    global: { headers: { Authorization: `Bearer ${auth.token}` } },
+  })
+
+  // ✅ IMPORTANT: PostgREST matches RPC signatures by argument names. Use p_*.
+  const rpcArgs = {
+    p_provider_id: payload.provider_id,
+    p_industry_key: industryKey,
+    p_service_key: null,
+    p_quote_transparency_score: payload.quote_transparency_score ?? null,
+    p_hidden_items: payload.hidden_items ?? [],
+    p_fee_breakdown: null,
+    p_context: context,
+  }
+
+  const { data, error } = await supabase.rpc('create_fee_entry_v2', rpcArgs)
+
+  if (error) {
+    const mapped = mapRpcError(error.message ?? 'Unknown error')
+    return json<ApiErrorPayload>(
+      { ok: false, error_code: mapped.code, message: mapped.message, details: { rpc: error } },
+      mapped.code === 'AUTH_REQUIRED' ? 401 : 400
+    )
+  }
+
+  // Normalise business-error shape: { success:false, error:"..." }
+  if (data && typeof data === 'object') {
+    const anyData = data as Record<string, unknown>
+    if (anyData.success === false) {
+      const msg = String(anyData.error ?? 'Unknown error')
+      const mapped = mapRpcError(msg)
+      return json<ApiErrorPayload>(
+        { ok: false, error_code: mapped.code, message: mapped.message, details: anyData },
+        mapped.code === 'AUTH_REQUIRED' ? 401 : 400
+      )
+    }
+  }
+
+  return json<OkPayload<unknown>>({ ok: true, data }, 200)
 })

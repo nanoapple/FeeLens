@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, useRef, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 
 import {
@@ -21,6 +21,9 @@ import {
   type ServiceOption,
   type SchemaProperty,
 } from '@/hooks/use-industry-schema'
+
+import { classifyError, type ApiError } from '@/lib/errors'
+import { ApiErrorDisplay } from '@/components/ui/api-error-display'
 
 interface LegalFeeFormProps {
   providerId: string
@@ -72,8 +75,9 @@ export function LegalFeeForm({ providerId, providerName, industryKey }: LegalFee
   const { schema, loading: schemaLoading, error: schemaError } = useIndustrySchema(industryKey)
 
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [apiError, setApiError] = useState<ApiError | null>(null)
   const [success, setSuccess] = useState(false)
+  const submitGuard = useRef(false)
   const [currentStep, setCurrentStep] = useState(1)
 
   const [serviceKey, setServiceKey] = useState('')
@@ -310,91 +314,119 @@ export function LegalFeeForm({ providerId, providerName, industryKey }: LegalFee
     setEvidenceStatus((prev) => ({ ...prev, [file.name]: 'confirmed' }))
   }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
+async function handleSubmit(e: FormEvent) {
+  e.preventDefault()
 
-    const validationErrors = validateCurrentStep(3)
-    if (validationErrors.length) {
-      setError(validationErrors.join(' '))
+  // Anti-double-submit
+  if (submitGuard.current || isSubmitting) return
+  submitGuard.current = true
+
+  // Frontend validation first (two-stage: frontend → backend)
+  const validationErrors = validateCurrentStep(3)
+  if (validationErrors.length) {
+    setApiError({
+      code: 'VALIDATION_FAILED',
+      message: 'Some fields need to be corrected. Please review the errors below.',
+      fieldErrors: Object.fromEntries(validationErrors.map((msg, i) => [`field_${i}`, msg])),
+    })
+    submitGuard.current = false
+    return
+  }
+
+  setApiError(null)
+  setIsSubmitting(true)
+
+  try {
+    const user = await getCurrentUser()
+    if (!user) {
+      setApiError(classifyError({ error: 'not authenticated' }))
+      setIsSubmitting(false)
+      submitGuard.current = false
       return
     }
 
-    setError('')
-    setIsSubmitting(true)
+    const feeBreakdown: FeeBreakdown = {
+      pricing_model: pricingModel as PricingModel,
+      gst_included: gstIncluded,
+    }
 
-    try {
-      const user = await getCurrentUser()
-      if (!user) {
-        setError('Please log in first')
-        setIsSubmitting(false)
-        return
-      }
+    if (fixedFeeAmount) feeBreakdown.fixed_fee_amount = parseFloat(fixedFeeAmount)
+    if (hourlyRate) feeBreakdown.hourly_rate = parseFloat(hourlyRate)
+    if (estimatedHours) feeBreakdown.estimated_hours = parseFloat(estimatedHours)
+    if (retainerAmount) feeBreakdown.retainer_amount = parseFloat(retainerAmount)
+    if (upliftPct) feeBreakdown.uplift_pct = parseFloat(upliftPct)
+    if (contingencyPct) feeBreakdown.contingency_pct = parseFloat(contingencyPct)
+    if (totalEstimated) feeBreakdown.total_estimated = parseFloat(totalEstimated)
 
-      const feeBreakdown: FeeBreakdown = {
-        pricing_model: pricingModel as PricingModel,
-        gst_included: gstIncluded,
-      }
+    if (disbursements.length > 0) {
+      feeBreakdown.disbursements_items = disbursements
+      feeBreakdown.disbursements_total = disbursementsTotal
+    }
 
-      if (fixedFeeAmount) feeBreakdown.fixed_fee_amount = parseFloat(fixedFeeAmount)
-      if (hourlyRate) feeBreakdown.hourly_rate = parseFloat(hourlyRate)
-      if (estimatedHours) feeBreakdown.estimated_hours = parseFloat(estimatedHours)
-      if (retainerAmount) feeBreakdown.retainer_amount = parseFloat(retainerAmount)
-      if (upliftPct) feeBreakdown.uplift_pct = parseFloat(upliftPct)
-      if (contingencyPct) feeBreakdown.contingency_pct = parseFloat(contingencyPct)
-      if (totalEstimated) feeBreakdown.total_estimated = parseFloat(totalEstimated)
+    const context: Record<string, unknown> = {
+      matter_type: serviceKey,
+      jurisdiction,
+      ...contextFields,
+    }
 
-      if (disbursements.length > 0) {
-        feeBreakdown.disbursements_items = disbursements
-        feeBreakdown.disbursements_total = disbursementsTotal
-      }
+    const params: CreateEntryV2Params = {
+      provider_id: providerId,
+      industry_key: industryKey,
+      service_key: serviceKey,
+      fee_breakdown: feeBreakdown,
+      context,
+      quote_transparency_score: quoteTransparencyScore,
+    }
 
-      const context: Record<string, unknown> = {
-        matter_type: serviceKey,
-        jurisdiction,
-        ...contextFields,
-      }
+    if (initialQuoteTotal) params.initial_quote_total = parseFloat(initialQuoteTotal)
+    if (finalTotalPaid) params.final_total_paid = parseFloat(finalTotalPaid)
 
-      const params: CreateEntryV2Params = {
-        provider_id: providerId,
-        industry_key: industryKey,
-        service_key: serviceKey,
-        fee_breakdown: feeBreakdown,
-        context,
-        quote_transparency_score: quoteTransparencyScore,
-      }
+    // Single write entry point: Edge Function create-entry-v2
+    const result = await createEntryV2(params)
 
-      if (initialQuoteTotal) params.initial_quote_total = parseFloat(initialQuoteTotal)
-      if (finalTotalPaid) params.final_total_paid = parseFloat(finalTotalPaid)
+    if (!result.success) {
+      // error_code primary, string fallback via classifyError
+      setApiError(classifyError(result))
+      setIsSubmitting(false)
+      submitGuard.current = false
+      return
+    }
 
-      const result = await createEntryV2(params)
+    // Link evidence (best-effort — don't block success)
+    const createdEntryId: string | undefined =
+      (result as any).entry_id || (result as any).entryId || (result as any).id
 
-      if (!result.success) {
-        setError(result.error || 'Submission failed')
-        setIsSubmitting(false)
-        return
-      }
-
-      const createdEntryId: string | undefined = (result as any).entry_id || (result as any).entryId || (result as any).id
-
-      // link evidence (best-effort)
-      if (createdEntryId && confirmedEvidenceIds.length) {
-        for (const evId of confirmedEvidenceIds) {
-          const link = await linkEvidenceToEntry({ evidence_id: evId, entry_id: createdEntryId })
-          if (!link.success) {
-            setEvidenceError(link.error || 'Evidence linking failed')
-            break
-          }
+    if (createdEntryId && confirmedEvidenceIds.length) {
+      for (const evId of confirmedEvidenceIds) {
+        const link = await linkEvidenceToEntry({ evidence_id: evId, entry_id: createdEntryId })
+        if (!link.success) {
+          setEvidenceError(link.error || 'Evidence linking failed')
+          break
         }
       }
-
-      setSuccess(true)
-      setTimeout(() => router.push(`/entries?industry=${industryKey}`), 1500)
-    } catch (err) {
-      console.error(err)
-      setError('Network error, please try again')
-      setIsSubmitting(false)
     }
+
+    // Success — confirmation = API response, NOT list page visibility
+    setSuccess(true)
+    // Clear key form state so back-button doesn't show stale data
+    setServiceKey('')
+    setPricingModel('')
+    setFixedFeeAmount('')
+    setHourlyRate('')
+    setEstimatedHours('')
+    setDisbursements([])
+    setInitialQuoteTotal('')
+    setFinalTotalPaid('')
+
+    router.replace('/entries?mine=true&created=1')
+  } catch (err) {
+    console.error('Submit error:', err)
+    setApiError(classifyError({ error: 'network error' }))
+    setIsSubmitting(false)
+    submitGuard.current = false
   }
+}
+
 
   if (schemaLoading) {
     return (
@@ -414,16 +446,16 @@ export function LegalFeeForm({ providerId, providerName, industryKey }: LegalFee
     )
   }
 
-  if (success) {
-    return (
-      <div className="max-w-2xl mx-auto p-8">
-        <div className="p-6 bg-green-50 border border-green-200 rounded-lg">
-          <h2 className="text-xl font-bold text-green-800 mb-2">Submitted successfully</h2>
-          <p className="text-green-700">Thank you! Redirecting to entries list...</p>
-        </div>
+if (success) {
+  return (
+    <div className="max-w-2xl mx-auto p-8">
+      <div className="p-6 bg-green-50 border border-green-200 rounded-lg">
+        <h2 className="text-xl font-bold text-green-800 mb-2">Submitted successfully</h2>
+        <p className="text-green-700">Redirecting to your entries...</p>
       </div>
-    )
-  }
+    </div>
+  )
+}
 
   // UI below: keep your existing step UI; I only add the Evidence block in step 3.
   // NOTE: This file intentionally stays close to your existing form layout.
@@ -440,9 +472,7 @@ export function LegalFeeForm({ providerId, providerName, industryKey }: LegalFee
         </p>
       </div>
 
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
-      )}
+      <ApiErrorDisplay error={apiError} onDismiss={() => setApiError(null)} className="mb-4" />
 
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* Step indicator */}

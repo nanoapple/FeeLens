@@ -1,26 +1,41 @@
 -- ==========================================
 -- FeeLens — Seed Data (idempotent / repeatable)
 -- Location: supabase/seed.sql
--- Run: supabase db reset
+-- Run:      supabase db reset
+--
+-- GoTrue compatibility (Supabase CLI 2.75+):
+--   email_change, *_token columns → '' (GoTrue scans as non-nullable string)
+--   phone, phone_change, phone_change_token → OMITTED (use NULL defaults)
+--     phone has UNIQUE constraint; multiple '' would violate it.
+--     GoTrue handles nullable phone correctly (optional by design).
+--
+-- Role Matrix (seed + migration 20260219000001):
+--   admin@feelens.local  / adminpass123  → admin
+--   mod@feelens.local    / modpass123    → moderator  (created in migration)
+--   test@feelens.local   / testpass123   → user
+--   user2@feelens.local  / testpass123   → user
 -- ==========================================
 
 -- ==========================================
--- 0) Guard: ensure required extensions
+-- 0) Extensions
 -- ==========================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ==========================================
--- 1) Test users (auth.users + auth.identities)
+-- 1) Test users
 -- ==========================================
 
--- User 1: normal
+-- User 1: test@feelens.local (normal user — permission denial baseline)
 INSERT INTO auth.users (
   instance_id, id, aud, role, email,
   encrypted_password, email_confirmed_at,
   created_at, updated_at,
   raw_app_meta_data, raw_user_meta_data,
-  is_super_admin, confirmation_token
+  is_super_admin, confirmation_token,
+  email_change, email_change_token_new, email_change_token_current,
+  recovery_token, reauthentication_token,
+  is_sso_user, is_anonymous
 ) VALUES (
   '00000000-0000-0000-0000-000000000000',
   '11111111-1111-1111-1111-111111111111',
@@ -30,7 +45,10 @@ INSERT INTO auth.users (
   NOW(), NOW(), NOW(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"display_name":"Test User"}'::jsonb,
-  FALSE, ''
+  FALSE, '',
+  '', '', '',
+  '', '',
+  FALSE, FALSE
 ) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO auth.identities (
@@ -42,15 +60,18 @@ INSERT INTO auth.identities (
   '11111111-1111-1111-1111-111111111111',
   '{"sub":"11111111-1111-1111-1111-111111111111","email":"test@feelens.local"}'::jsonb,
   'email', NOW(), NOW(), NOW()
-) ON CONFLICT (provider, provider_id) DO NOTHING;
+) ON CONFLICT (id) DO NOTHING;
 
--- User 2: admin
+-- User 2: admin@feelens.local
 INSERT INTO auth.users (
   instance_id, id, aud, role, email,
   encrypted_password, email_confirmed_at,
   created_at, updated_at,
   raw_app_meta_data, raw_user_meta_data,
-  is_super_admin, confirmation_token
+  is_super_admin, confirmation_token,
+  email_change, email_change_token_new, email_change_token_current,
+  recovery_token, reauthentication_token,
+  is_sso_user, is_anonymous
 ) VALUES (
   '00000000-0000-0000-0000-000000000000',
   '22222222-2222-2222-2222-222222222222',
@@ -60,7 +81,10 @@ INSERT INTO auth.users (
   NOW(), NOW(), NOW(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"display_name":"Admin User"}'::jsonb,
-  FALSE, ''
+  FALSE, '',
+  '', '', '',
+  '', '',
+  FALSE, FALSE
 ) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO auth.identities (
@@ -72,15 +96,18 @@ INSERT INTO auth.identities (
   '22222222-2222-2222-2222-222222222222',
   '{"sub":"22222222-2222-2222-2222-222222222222","email":"admin@feelens.local"}'::jsonb,
   'email', NOW(), NOW(), NOW()
-) ON CONFLICT (provider, provider_id) DO NOTHING;
+) ON CONFLICT (id) DO NOTHING;
 
--- User 3: normal (for multi-user governance tests)
+-- User 3: user2@feelens.local (second normal user)
 INSERT INTO auth.users (
   instance_id, id, aud, role, email,
   encrypted_password, email_confirmed_at,
   created_at, updated_at,
   raw_app_meta_data, raw_user_meta_data,
-  is_super_admin, confirmation_token
+  is_super_admin, confirmation_token,
+  email_change, email_change_token_new, email_change_token_current,
+  recovery_token, reauthentication_token,
+  is_sso_user, is_anonymous
 ) VALUES (
   '00000000-0000-0000-0000-000000000000',
   '33333333-3333-3333-3333-333333333333',
@@ -90,7 +117,10 @@ INSERT INTO auth.users (
   NOW(), NOW(), NOW(),
   '{"provider":"email","providers":["email"]}'::jsonb,
   '{"display_name":"Second User"}'::jsonb,
-  FALSE, ''
+  FALSE, '',
+  '', '', '',
+  '', '',
+  FALSE, FALSE
 ) ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO auth.identities (
@@ -102,10 +132,10 @@ INSERT INTO auth.identities (
   '33333333-3333-3333-3333-333333333333',
   '{"sub":"33333333-3333-3333-3333-333333333333","email":"user2@feelens.local"}'::jsonb,
   'email', NOW(), NOW(), NOW()
-) ON CONFLICT (provider, provider_id) DO NOTHING;
+) ON CONFLICT (id) DO NOTHING;
 
 -- ==========================================
--- 2) User roles
+-- 2) User roles (mod role set by migration 20260219000001)
 -- ==========================================
 INSERT INTO user_roles (user_id, role) VALUES
   ('11111111-1111-1111-1111-111111111111', 'user'),
@@ -133,7 +163,7 @@ INSERT INTO providers (
 ON CONFLICT (id) DO NOTHING;
 
 -- ==========================================
--- 4) Providers — real_estate pending (2) [ID range moved to avoid legal provider conflict]
+-- 4) Providers — real_estate pending (2)
 -- ==========================================
 INSERT INTO providers (id, name, slug, state, postcode, suburb, status, source, industry_tags) VALUES
   ('00000000-0000-0000-0000-000000000901', 'Test Property Management', 'test-property-management', 'NSW', '2000', 'Sydney',    'pending', 'seed', ARRAY['real_estate']),
@@ -141,7 +171,7 @@ INSERT INTO providers (id, name, slug, state, postcode, suburb, status, source, 
 ON CONFLICT (id) DO NOTHING;
 
 -- ==========================================
--- 5) Providers — legal_services approved (4) [kept as 0201-0204]
+-- 5) Providers — legal_services approved (4)
 -- ==========================================
 INSERT INTO providers (
   id, name, slug, category,
@@ -156,7 +186,6 @@ ON CONFLICT (id) DO NOTHING;
 
 -- ==========================================
 -- 6) Fee Entries — real_estate public (8)
---    Note: legacy columns set for compatibility; also set industry_key/service_key + moderation_status
 -- ==========================================
 INSERT INTO fee_entries (
   id, provider_id, submitter_user_id, submitter_pseudo_id,
@@ -200,7 +229,7 @@ INSERT INTO fee_entries (
 ON CONFLICT DO NOTHING;
 
 -- ==========================================
--- 7) Fee Entry — neutral public (submitter_user_id NULL) for governance regression
+-- 7) Fee Entry — neutral public (submitter NULL) for governance regression
 -- ==========================================
 INSERT INTO fee_entries (
   id, provider_id, submitter_user_id, submitter_pseudo_id,
@@ -221,7 +250,7 @@ INSERT INTO fee_entries (
 ) ON CONFLICT DO NOTHING;
 
 -- ==========================================
--- 8) Fee Entries — real_estate flagged (2) for admin queue
+-- 8) Fee Entries — flagged (2) for admin queue
 -- ==========================================
 INSERT INTO fee_entries (
   id, provider_id, submitter_user_id, submitter_pseudo_id,
@@ -243,7 +272,7 @@ INSERT INTO fee_entries (
 ON CONFLICT DO NOTHING;
 
 -- ==========================================
--- 9) Dispute (1 pending) + sync dispute_status on entry
+-- 9) Dispute (1 pending)
 -- ==========================================
 INSERT INTO disputes (
   id, entry_id, provider_verification_method, provider_contact, provider_claim, status
@@ -261,8 +290,7 @@ SET dispute_status = 'pending'
 WHERE id = 'aaaaaaaa-0000-0000-0000-000000000002';
 
 -- ==========================================
--- 10) Governance fixtures: entry_reports (open)
---     (Do NOT seed legacy reports table)
+-- 10) Entry reports (open)
 -- ==========================================
 INSERT INTO entry_reports (id, entry_id, reporter_user_id, reason_code, report_text, status) VALUES
   ('cccccccc-0000-0000-0000-000000000003',
@@ -303,7 +331,7 @@ INSERT INTO provider_actions (id, provider_id, actor_id, actor_type, action, old
 ON CONFLICT DO NOTHING;
 
 -- ==========================================
--- 13) Legal fee entries (8) — UUID block cccccccc-1000-... (no collision with flagged)
+-- 13) Legal fee entries (8)
 -- ==========================================
 
 -- Conveyancing (2)
@@ -316,54 +344,16 @@ INSERT INTO fee_entries (
    '00000000-0000-0000-0000-000000000201',
    '11111111-1111-1111-1111-111111111111', 'user_test1',
    'legal_services', 'conveyancing',
-   '{
-     "pricing_model": "hourly",
-     "hourly_rate": 350,
-     "estimated_hours": 8,
-     "gst_included": true,
-     "disbursements_items": [
-       {"label":"Title search","amount":30,"is_estimate":false},
-       {"label":"Registration fee","amount":150,"is_estimate":false},
-       {"label":"Council & water certificates","amount":85,"is_estimate":true}
-     ],
-     "disbursements_total": 265,
-     "total_estimated": 3065
-   }'::jsonb,
-   '{
-     "matter_type":"conveyancing",
-     "jurisdiction":"NSW",
-     "client_type":"individual",
-     "complexity_band":"medium",
-     "property_value":1200000,
-     "transaction_side":"buyer",
-     "property_type":"unit"
-   }'::jsonb,
+   '{"pricing_model":"hourly","hourly_rate":350,"estimated_hours":8,"gst_included":true,"disbursements_items":[{"label":"Title search","amount":30,"is_estimate":false},{"label":"Registration fee","amount":150,"is_estimate":false},{"label":"Council & water certificates","amount":85,"is_estimate":true}],"disbursements_total":265,"total_estimated":3065}'::jsonb,
+   '{"matter_type":"conveyancing","jurisdiction":"NSW","client_type":"individual","complexity_band":"medium","property_value":1200000,"transaction_side":"buyer","property_type":"unit"}'::jsonb,
    'C','public','approved'),
 
   ('cccccccc-1000-0000-0000-000000000002',
    '00000000-0000-0000-0000-000000000201',
    '33333333-3333-3333-3333-333333333333', 'user_test3',
    'legal_services', 'conveyancing',
-   '{
-     "pricing_model": "fixed",
-     "fixed_fee_amount": 1650,
-     "gst_included": true,
-     "disbursements_items": [
-       {"label":"Title search","amount":30,"is_estimate":false},
-       {"label":"Registration fee","amount":150,"is_estimate":false}
-     ],
-     "disbursements_total": 180,
-     "total_estimated": 1830
-   }'::jsonb,
-   '{
-     "matter_type":"conveyancing",
-     "jurisdiction":"NSW",
-     "client_type":"individual",
-     "complexity_band":"low",
-     "property_value":750000,
-     "transaction_side":"seller",
-     "property_type":"house"
-   }'::jsonb,
+   '{"pricing_model":"fixed","fixed_fee_amount":1650,"gst_included":true,"disbursements_items":[{"label":"Title search","amount":30,"is_estimate":false},{"label":"Registration fee","amount":150,"is_estimate":false}],"disbursements_total":180,"total_estimated":1830}'::jsonb,
+   '{"matter_type":"conveyancing","jurisdiction":"NSW","client_type":"individual","complexity_band":"low","property_value":750000,"transaction_side":"seller","property_type":"house"}'::jsonb,
    'C','public','approved')
 ON CONFLICT DO NOTHING;
 
@@ -377,47 +367,16 @@ INSERT INTO fee_entries (
    '00000000-0000-0000-0000-000000000202',
    '11111111-1111-1111-1111-111111111111', 'user_test1',
    'legal_services', 'workers_compensation',
-   '{
-     "pricing_model":"hourly",
-     "hourly_rate":450,
-     "estimated_hours":15,
-     "gst_included":true,
-     "disbursements_items":[
-       {"label":"Medical report","amount":800,"is_estimate":true},
-       {"label":"Court filing fee","amount":120,"is_estimate":false}
-     ],
-     "disbursements_total":920,
-     "total_estimated":7670
-   }'::jsonb,
-   '{
-     "matter_type":"workers_compensation",
-     "jurisdiction":"NSW",
-     "client_type":"individual",
-     "complexity_band":"high",
-     "claim_stage":"liability",
-     "damages_claim":true,
-     "estimated_claim_value":85000
-   }'::jsonb,
+   '{"pricing_model":"hourly","hourly_rate":450,"estimated_hours":15,"gst_included":true,"disbursements_items":[{"label":"Medical report","amount":800,"is_estimate":true},{"label":"Court filing fee","amount":120,"is_estimate":false}],"disbursements_total":920,"total_estimated":7670}'::jsonb,
+   '{"matter_type":"workers_compensation","jurisdiction":"NSW","client_type":"individual","complexity_band":"high","claim_stage":"liability","damages_claim":true,"estimated_claim_value":85000}'::jsonb,
    'C','public','approved'),
 
   ('cccccccc-1000-0000-0000-000000000004',
    '00000000-0000-0000-0000-000000000202',
    '33333333-3333-3333-3333-333333333333', 'user_test3',
    'legal_services', 'workers_compensation',
-   '{
-     "pricing_model":"fixed",
-     "fixed_fee_amount":2200,
-     "gst_included":true,
-     "total_estimated":2200
-   }'::jsonb,
-   '{
-     "matter_type":"workers_compensation",
-     "jurisdiction":"NSW",
-     "client_type":"individual",
-     "complexity_band":"low",
-     "claim_stage":"pre-lodgement",
-     "damages_claim":false
-   }'::jsonb,
+   '{"pricing_model":"fixed","fixed_fee_amount":2200,"gst_included":true,"total_estimated":2200}'::jsonb,
+   '{"matter_type":"workers_compensation","jurisdiction":"NSW","client_type":"individual","complexity_band":"low","claim_stage":"pre-lodgement","damages_claim":false}'::jsonb,
    'C','public','approved')
 ON CONFLICT DO NOTHING;
 
@@ -431,49 +390,16 @@ INSERT INTO fee_entries (
    '00000000-0000-0000-0000-000000000203',
    '11111111-1111-1111-1111-111111111111', 'user_test1',
    'legal_services', 'family_law',
-   '{
-     "pricing_model":"hourly",
-     "hourly_rate":500,
-     "estimated_hours":20,
-     "gst_included":true,
-     "disbursements_items":[
-       {"label":"Court filing fee","amount":370,"is_estimate":false},
-       {"label":"Process server","amount":120,"is_estimate":true},
-       {"label":"Valuation report","amount":1500,"is_estimate":true}
-     ],
-     "disbursements_total":1990,
-     "total_estimated":11990
-   }'::jsonb,
-   '{
-     "matter_type":"family_law",
-     "jurisdiction":"VIC",
-     "client_type":"individual",
-     "complexity_band":"high",
-     "court_stage":"interim",
-     "children_involved":true
-   }'::jsonb,
+   '{"pricing_model":"hourly","hourly_rate":500,"estimated_hours":20,"gst_included":true,"disbursements_items":[{"label":"Court filing fee","amount":370,"is_estimate":false},{"label":"Process server","amount":120,"is_estimate":true},{"label":"Valuation report","amount":1500,"is_estimate":true}],"disbursements_total":1990,"total_estimated":11990}'::jsonb,
+   '{"matter_type":"family_law","jurisdiction":"VIC","client_type":"individual","complexity_band":"high","court_stage":"interim","children_involved":true}'::jsonb,
    'C','public','approved'),
 
   ('cccccccc-1000-0000-0000-000000000006',
    '00000000-0000-0000-0000-000000000203',
    '33333333-3333-3333-3333-333333333333', 'user_test3',
    'legal_services', 'family_law',
-   '{
-     "pricing_model":"fixed",
-     "fixed_fee_amount":3500,
-     "gst_included":true,
-     "disbursements_items":[{"label":"Court filing fee","amount":170,"is_estimate":false}],
-     "disbursements_total":170,
-     "total_estimated":3670
-   }'::jsonb,
-   '{
-     "matter_type":"family_law",
-     "jurisdiction":"VIC",
-     "client_type":"individual",
-     "complexity_band":"medium",
-     "court_stage":"consent_orders",
-     "children_involved":false
-   }'::jsonb,
+   '{"pricing_model":"fixed","fixed_fee_amount":3500,"gst_included":true,"disbursements_items":[{"label":"Court filing fee","amount":170,"is_estimate":false}],"disbursements_total":170,"total_estimated":3670}'::jsonb,
+   '{"matter_type":"family_law","jurisdiction":"VIC","client_type":"individual","complexity_band":"medium","court_stage":"consent_orders","children_involved":false}'::jsonb,
    'C','public','approved')
 ON CONFLICT DO NOTHING;
 
@@ -487,53 +413,20 @@ INSERT INTO fee_entries (
    '00000000-0000-0000-0000-000000000204',
    '11111111-1111-1111-1111-111111111111', 'user_test1',
    'legal_services', 'migration',
-   '{
-     "pricing_model":"hourly",
-     "hourly_rate":380,
-     "estimated_hours":10,
-     "gst_included":true,
-     "disbursements_items":[
-       {"label":"Visa application fee","amount":4115,"is_estimate":false},
-       {"label":"Skills assessment","amount":500,"is_estimate":true},
-       {"label":"Health check","amount":350,"is_estimate":true}
-     ],
-     "disbursements_total":4965,
-     "total_estimated":8765
-   }'::jsonb,
-   '{
-     "matter_type":"migration",
-     "jurisdiction":"QLD",
-     "client_type":"individual",
-     "complexity_band":"medium",
-     "visa_type":"subclass_482",
-     "application_stage":"pre-lodgement"
-   }'::jsonb,
+   '{"pricing_model":"hourly","hourly_rate":380,"estimated_hours":10,"gst_included":true,"disbursements_items":[{"label":"Visa application fee","amount":4115,"is_estimate":false},{"label":"Skills assessment","amount":500,"is_estimate":true},{"label":"Health check","amount":350,"is_estimate":true}],"disbursements_total":4965,"total_estimated":8765}'::jsonb,
+   '{"matter_type":"migration","jurisdiction":"QLD","client_type":"individual","complexity_band":"medium","visa_type":"subclass_482","application_stage":"pre-lodgement"}'::jsonb,
    'C','public','approved'),
 
   ('cccccccc-1000-0000-0000-000000000008',
    '00000000-0000-0000-0000-000000000204',
    '33333333-3333-3333-3333-333333333333', 'user_test3',
    'legal_services', 'migration',
-   '{
-     "pricing_model":"fixed",
-     "fixed_fee_amount":5500,
-     "gst_included":true,
-     "disbursements_items":[{"label":"Visa application fee","amount":8085,"is_estimate":false}],
-     "disbursements_total":8085,
-     "total_estimated":13585
-   }'::jsonb,
-   '{
-     "matter_type":"migration",
-     "jurisdiction":"QLD",
-     "client_type":"individual",
-     "complexity_band":"high",
-     "visa_type":"subclass_820_801",
-     "application_stage":"lodged"
-   }'::jsonb,
+   '{"pricing_model":"fixed","fixed_fee_amount":5500,"gst_included":true,"disbursements_items":[{"label":"Visa application fee","amount":8085,"is_estimate":false}],"disbursements_total":8085,"total_estimated":13585}'::jsonb,
+   '{"matter_type":"migration","jurisdiction":"QLD","client_type":"individual","complexity_band":"high","visa_type":"subclass_820_801","application_stage":"lodged"}'::jsonb,
    'C','public','approved')
 ON CONFLICT DO NOTHING;
 
--- Optional: review_count for legal providers
+-- review_count for legal providers
 UPDATE providers SET review_count = 2 WHERE id IN (
   '00000000-0000-0000-0000-000000000201',
   '00000000-0000-0000-0000-000000000202',
@@ -542,7 +435,7 @@ UPDATE providers SET review_count = 2 WHERE id IN (
 );
 
 -- ==========================================
--- 14) Summary notices
+-- 14) Summary
 -- ==========================================
 DO $$
 DECLARE
@@ -567,9 +460,10 @@ BEGIN
   RAISE NOTICE '  FeeLens Seed 数据加载完成';
   RAISE NOTICE '==========================================';
   RAISE NOTICE '  测试用户:          % 个', v_users_count;
-  RAISE NOTICE '    test@feelens.local   / testpass123  (普通用户)';
-  RAISE NOTICE '    admin@feelens.local  / adminpass123 (管理员)';
-  RAISE NOTICE '    user2@feelens.local  / testpass123  (第二个普通用户)';
+  RAISE NOTICE '    test@feelens.local   / testpass123  (user)';
+  RAISE NOTICE '    admin@feelens.local  / adminpass123 (admin)';
+  RAISE NOTICE '    mod@feelens.local    / modpass123   (moderator) ← migration';
+  RAISE NOTICE '    user2@feelens.local  / testpass123  (user)';
   RAISE NOTICE '  Approved Providers:  %', v_providers_ok;
   RAISE NOTICE '  Pending Providers:   %', v_providers_pending;
   RAISE NOTICE '  Public Entries:      %', v_entries_public;
