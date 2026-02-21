@@ -1,21 +1,4 @@
-// ==========================================
-// Edge Function: submit-entry (patched for local ES256 auth)
-//
-// Purpose:
-// - Accept simplified "submit" payloads (non-legal industries)
-// - Validate input (UX layer)
-// - Authenticate via /auth/v1/user (works with ES256)
-// - Call DB RPC (single write path)
-//
-// NOTE:
-// This implementation targets the same DB RPC "create_fee_entry_v2" with
-// industry_key defaulting to 'real_estate'. If your repo uses a different
-// RPC for submit-entry, rename the RPC accordingly.
-//
-// Expected config.toml (local):
-//   [functions.submit-entry]
-//   verify_jwt = false
-// ==========================================
+// supabase/functions/submit-entry/index.ts
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0'
@@ -117,10 +100,7 @@ function mapRpcError(message: string): { code: string; message: string } {
     return { code: 'PROVIDER_NOT_APPROVED', message: 'Provider is pending verification.' }
   }
   if (m.includes('24小时') || m.includes('rate limit') || m.includes('too many')) {
-    return {
-      code: 'RATE_LIMITED',
-      message: 'You have reached the submission limit. Please try again later.',
-    }
+    return { code: 'RATE_LIMITED', message: 'You have reached the submission limit. Please try again later.' }
   }
   if (m.includes('validation')) {
     return { code: 'VALIDATION_FAILED', message: 'Validation failed.' }
@@ -128,26 +108,21 @@ function mapRpcError(message: string): { code: string; message: string } {
   return { code: 'UNKNOWN', message }
 }
 
-// Minimal submit payload (real_estate example). Allow passthrough for future expansion.
 const SubmitEntrySchema = z
   .object({
     provider_id: z.string().uuid('Invalid provider ID'),
-    // Industry is fixed for this endpoint by default.
     industry_key: z.string().optional().default('real_estate'),
 
-    // Real-estate sample fields
     property_type: z.string().min(1).optional(),
     management_fee_pct: z.number().min(0).max(100).optional(),
     management_fee_incl_gst: z.boolean().optional(),
 
-    // Common
     hidden_items: z.array(z.string()).optional().default([]),
     quote_transparency_score: z.number().int().min(1).max(5).optional(),
     initial_quote_total: z.number().positive().optional(),
     final_total_paid: z.number().positive().optional(),
     evidence_object_key: z.string().optional(),
 
-    // Optional: allow client to pass a context object
     context: z.record(z.unknown()).optional().default({}),
   })
   .passthrough()
@@ -184,11 +159,9 @@ serve(async (req: Request) => {
     )
   }
 
-  // ✅ FIX: define payload/industryKey/context in-scope
   const payload = parsed.data
   const industryKey = payload.industry_key ?? 'real_estate'
 
-  // Build context for RPC-side schema validation. Start from payload.context, then add known fields.
   const context: Record<string, unknown> = {
     ...(payload.context ?? {}),
     property_type: payload.property_type ?? null,
@@ -205,7 +178,6 @@ serve(async (req: Request) => {
     global: { headers: { Authorization: `Bearer ${auth.token}` } },
   })
 
-  // ✅ IMPORTANT: PostgREST matches RPC signatures by argument names. Use p_*.
   const rpcArgs = {
     p_provider_id: payload.provider_id,
     p_industry_key: industryKey,
@@ -226,9 +198,19 @@ serve(async (req: Request) => {
     )
   }
 
-  // Normalise business-error shape: { success:false, error:"..." }
+  // ✅ NEW: normalise both {success:false,...} and {error:"..."} shapes
   if (data && typeof data === 'object') {
     const anyData = data as Record<string, unknown>
+
+    const errStr = typeof anyData.error === 'string' ? anyData.error.trim() : ''
+    if (errStr) {
+      const mapped = mapRpcError(errStr)
+      return json<ApiErrorPayload>(
+        { ok: false, error_code: mapped.code, message: mapped.message, details: anyData },
+        mapped.code === 'AUTH_REQUIRED' ? 401 : 400
+      )
+    }
+
     if (anyData.success === false) {
       const msg = String(anyData.error ?? 'Unknown error')
       const mapped = mapRpcError(msg)
