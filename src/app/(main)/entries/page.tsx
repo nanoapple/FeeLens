@@ -154,6 +154,8 @@ export default function EntriesListPage() {
   const [hasMore, setHasMore] = useState(false)
 
   // ── Fetch entries ────────────────────────────────────────────────────────
+  // NOTE: Uses setEntries(prev => ...) to avoid closing over `entries` state,
+  // which would cause stale closures and Compiler memoization mismatches.
 
   const fetchEntries = useCallback(async (append = false, afterCursor?: Cursor) => {
     if (append) setLoadingMore(true)
@@ -191,11 +193,10 @@ export default function EntriesListPage() {
       const { data, count, error } = await query
       if (error) {
         console.error('Failed to fetch my entries:', error)
-        setEntries(append ? entries : [])
+        if (!append) setEntries([])
       } else {
         const rows = (data || []) as EntryRow[]
-        const merged = append ? [...entries, ...rows] : rows
-        setEntries(merged)
+        setEntries(prev => append ? [...prev, ...rows] : rows)
         setTotal(count || 0)
         setHasMore(rows.length === PAGE_SIZE)
         if (rows.length > 0) {
@@ -225,11 +226,10 @@ export default function EntriesListPage() {
       const { data, count, error } = await query
       if (error) {
         console.error('Failed to fetch entries:', error)
-        setEntries(append ? entries : [])
+        if (!append) setEntries([])
       } else {
         const rows = (data || []) as EntryRow[]
-        const merged = append ? [...entries, ...rows] : rows
-        setEntries(merged)
+        setEntries(prev => append ? [...prev, ...rows] : rows)
         setTotal(count || 0)
         setHasMore(rows.length === PAGE_SIZE)
         if (rows.length > 0) {
@@ -244,10 +244,12 @@ export default function EntriesListPage() {
   }, [industryFilter, serviceFilter, stateFilter, isMine])
 
   // Initial fetch + re-fetch on filter change
+  // Single effect keyed on the filter-derived fetchEntries identity.
+  // When filters change, useCallback returns a new ref → effect re-runs.
   useEffect(() => {
     setCursor(null)
     setHasMore(false)
-    fetchEntries(false)
+    void fetchEntries(false)
   }, [fetchEntries])
 
   // Sync URL params

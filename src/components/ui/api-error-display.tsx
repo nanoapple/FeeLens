@@ -16,7 +16,7 @@
 
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ApiError } from '@/lib/errors'
 
 // ── Banner styles by error severity ──────────────────────────────────────────
@@ -52,28 +52,35 @@ function getSeverity(code: string): 'warning' | 'error' | 'info' {
 // ── Countdown hook for rate limits ───────────────────────────────────────────
 
 function useCountdown(seconds: number | undefined): string | null {
-  const [remaining, setRemaining] = useState(seconds ?? 0)
+  const [endAtMs, setEndAtMs] = useState<number | null>(null)
+  const [now, setNow] = useState<number>(() => Date.now())
 
+  // Set end time when seconds changes (no ref, no render impurity)
   useEffect(() => {
-    if (!seconds || seconds <= 0) return
-    setRemaining(seconds)
-    const interval = setInterval(() => {
-      setRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-    return () => clearInterval(interval)
+    if (!seconds || seconds <= 0) {
+      setEndAtMs(null)
+      return
+    }
+    setEndAtMs(Date.now() + seconds * 1000)
+    setNow(Date.now())
   }, [seconds])
+
+  // Tick
+  useEffect(() => {
+    if (!endAtMs) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [endAtMs])
+
+  const remaining = useMemo(() => {
+    if (!endAtMs) return 0
+    return Math.max(0, Math.ceil((endAtMs - now) / 1000))
+  }, [endAtMs, now])
 
   if (!seconds || remaining <= 0) return null
   const mins = Math.floor(remaining / 60)
   const secs = remaining % 60
-  if (mins > 0) return `${mins}m ${secs}s`
-  return `${secs}s`
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
 }
 
 // ── Main banner component ────────────────────────────────────────────────────
@@ -85,11 +92,13 @@ interface ApiErrorDisplayProps {
 }
 
 export function ApiErrorDisplay({ error, onDismiss, className = '' }: ApiErrorDisplayProps) {
+  // ✅ Hook must be called unconditionally (before any early return)
+  const countdown = useCountdown(error?.retryAfterSeconds)
+
   if (!error) return null
 
   const severity = getSeverity(error.code)
   const style = BANNER_STYLES[severity]
-  const countdown = useCountdown(error.retryAfterSeconds)
 
   // Log raw error in development only
   if (process.env.NODE_ENV === 'development' && error.raw) {

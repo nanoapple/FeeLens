@@ -1,87 +1,42 @@
 // src/app/(main)/explore/page.tsx
+// ==========================================
+// Explore Page — Server Component
+//
+// Single source of truth: GET /api/explore (service-role query, DTO stable)
+//
+// Why:
+// - Avoid duplicated DB logic between page + API
+// - Avoid Next 16 cookies()/server client integration issues
+// - Ensure Explore page matches API behaviour exactly
+// ==========================================
 
 import ExploreShell from '@/components/explore/ExploreShell'
 import { parseExploreQuery } from '@/lib/explore/query'
 import type { ExploreResponseDTO } from '@/types/explore'
+import { headers } from 'next/headers'
+
+export const revalidate = 30
 
 type SearchParams = Record<string, string | string[] | undefined>
 
-function buildStubResponse(): ExploreResponseDTO {
+function toQueryString(sp: SearchParams): string {
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(sp)) {
+    if (v == null) continue
+    if (Array.isArray(v)) {
+      for (const x of v) params.append(k, x)
+    } else {
+      params.set(k, v)
+    }
+  }
+  return params.toString()
+}
+
+function emptyResponse(pageSize: number): ExploreResponseDTO {
   return {
-    items: [
-      {
-        provider: {
-          id: 'prov_1',
-          slug: 'sample-provider-1',
-          name: 'Sample Property Management',
-          suburb: 'Sydney',
-          state: 'NSW',
-          postcode: '2000',
-          geoLat: null,
-          geoLng: null,
-          status: 'approved',
-        },
-        entry: {
-          id: 'entry_1',
-          industryKey: 'real_estate',
-          serviceKey: 'property_management',
-          submitDate: '2026-02-21',
-          createdAt: null,
-          evidenceTier: 'A',
-          initialQuoteTotal: 1800,
-          finalTotalPaid: 2400,
-          deltaPct: 33.33,
-          hiddenItemsCount: 2,
-          quoteTransparencyScore: 3,
-          disputeStatus: 'none',
-          moderationStatus: 'approved',
-          visibility: 'public',
-        },
-      },
-      {
-        provider: {
-          id: 'prov_2',
-          slug: 'sample-provider-2',
-          name: 'Example Realty Services',
-          suburb: 'Parramatta',
-          state: 'NSW',
-          postcode: '2150',
-          geoLat: null,
-          geoLng: null,
-          status: 'approved',
-        },
-        entry: {
-          id: 'entry_2',
-          industryKey: 'real_estate',
-          serviceKey: 'letting',
-          submitDate: '2026-02-18',
-          createdAt: null,
-          evidenceTier: 'B',
-          initialQuoteTotal: 950,
-          finalTotalPaid: 980,
-          deltaPct: 3.16,
-          hiddenItemsCount: 0,
-          quoteTransparencyScore: 4,
-          disputeStatus: 'pending',
-          moderationStatus: 'approved',
-          visibility: 'public',
-        },
-      },
-    ],
-    summary: {
-      totalCount: 2,
-      paidP25: 980,
-      paidP50: 1690,
-      paidP75: 2400,
-      avgDeltaPct: 18.25,
-      evidenceCounts: { A: 1, B: 1, C: 0 },
-    },
-    meta: {
-      page: 1,
-      pageSize: 20,
-      totalPages: 1,
-      totalCount: 2,
-    },
+    items: [],
+    summary: { totalCount: 0 },
+    meta: { page: 1, pageSize, totalPages: 1, totalCount: 0 },
   }
 }
 
@@ -90,12 +45,40 @@ export default async function ExplorePage({
 }: {
   searchParams?: Promise<SearchParams> | SearchParams
 }) {
-  // Next.js 16: searchParams is often a Promise in server components.
   const sp = (await Promise.resolve(searchParams)) ?? {}
   const query = parseExploreQuery(sp)
 
-  // v1: stub data (replace with real data fetch later)
-  const data = buildStubResponse()
+  // Build absolute base URL (Next 16 server fetch often needs absolute URL)
+  const h = await headers()
+  const host = h.get('x-forwarded-host') ?? h.get('host') ?? 'localhost:3000'
+  const proto = h.get('x-forwarded-proto') ?? 'http'
+  const baseUrl = `${proto}://${host}`
+
+  const qs = toQueryString(sp)
+  const url = `${baseUrl}/api/explore${qs ? `?${qs}` : ''}`
+
+  let data: ExploreResponseDTO = emptyResponse(query.pagination.pageSize)
+
+  try {
+    const res = await fetch(url, { next: { revalidate } })
+    if (!res.ok) {
+      // API should return JSON; but if it doesn't, degrade gracefully
+      console.error('[explore/page] /api/explore returned non-OK:', res.status, res.statusText)
+      return <ExploreShell query={query} data={data} />
+    }
+
+    const json = (await res.json()) as ExploreResponseDTO
+    // minimal sanity check
+    if (!json || !Array.isArray(json.items) || !json.meta) {
+      console.error('[explore/page] /api/explore returned unexpected payload shape')
+      return <ExploreShell query={query} data={data} />
+    }
+
+    data = json
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('[explore/page] fetch /api/explore failed:', msg)
+  }
 
   return <ExploreShell query={query} data={data} />
 }

@@ -1,32 +1,22 @@
-// src/app/(main)/explore/page.tsx
-import dynamic from 'next/dynamic'
+// src/app/page.tsx
+// ==========================================
+// FeeLens Homepage
+//
+// Renders HomeClient with static popular links.
+// Stats + recent reports are fetched client-side
+// from /api/home (see home-client.tsx for future expansion).
+// ==========================================
 
-const ExploreClient = dynamic(
-  () => import('@/components/explore/ExploreClient.tsx').then((m) => ({
-    default: m.ExploreClient,
-  })),
-  {
-    ssr: false,
-    loading: () => (
-      <div
-        style={{
-          height: '100vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          background: '#F5F5F0',
-          fontFamily: 'DM Sans, sans-serif',
-          color: '#999',
-          fontSize: '0.9rem',
-          fontWeight: 600,
-        }}
-      >
-        Loading map
-      </div>
-    ),
-  }
-)
+import { HomeClient } from '@/components/home/home-client'
+import type { PopularLink } from '@/types/home'
 
-export default function ExplorePage() {
-  return <ExploreClient />
+const POPULAR_LINKS: PopularLink[] = [
+  { label: 'Sydney CBD', href: '/entries?industry=real_estate&q=2000' },
+  { label: 'Melbourne 3000', href: '/entries?industry=real_estate&q=3000' },
+  { label: 'Ray White', href: '/entries?industry=real_estate&q=ray+white' },
+  { label: 'LJ Hooker', href: '/entries?industry=real_estate&q=lj+hooker' },
+]
+
+export default function HomePage() {
+  return <HomeClient popular={POPULAR_LINKS} />
 }
